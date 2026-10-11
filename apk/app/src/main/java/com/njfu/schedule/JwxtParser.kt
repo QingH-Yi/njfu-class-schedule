@@ -21,6 +21,25 @@ object JwxtParser {
         return parseCourseTable(doc)
     }
 
+    /**
+     * 从个人中心课表（framework/mainV_index_loadkb.htmlx）HTML 提取 课名→学分。
+     * 该页悬停课程卡片显示的浮层就是 div.item-box，其中带「学分：X」。
+     * 与 web/js/parser.js 的 parseCredits 保持同步（改一处必须同步另一处）。
+     */
+    fun parseCredits(html: String): Map<String, String> {
+        val doc = Jsoup.parse(html)
+        val out = LinkedHashMap<String, String>()
+        val creditRe = Regex("学分[：:]\\s*([0-9]+(?:\\.[0-9]+)?)")
+        for (box in doc.select("div.item-box")) {
+            val name = box.selectFirst("p")?.text()?.trim() ?: continue
+            if (name.isEmpty()) continue
+            val creditSpan = box.select("span").firstOrNull { it.text().contains("学分") } ?: continue
+            val m = creditRe.find(creditSpan.text()) ?: continue
+            out[name] = m.groupValues[1]
+        }
+        return out
+    }
+
     fun parseCourseTable(doc: Document): ParseResult? {
         // 1. 选出最像课表的表格
         var best: Element? = null

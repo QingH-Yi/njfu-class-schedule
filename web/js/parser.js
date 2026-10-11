@@ -366,8 +366,34 @@
     return { term: term, courses: courses };
   }
 
+  /**
+   * 从个人中心课表（framework/mainV_index_loadkb.htmlx）HTML 提取 课名→学分。
+   * 该页悬停课程卡片显示的浮层就是 div.item-box，其中带「学分：X」。
+   * 与 JwxtParser.kt 的 parseCredits 保持同步（改一处必须同步另一处）。
+   */
+  function parseCredits(root) {
+    var doc = typeof root === 'string' ? new DOMParser().parseFromString(root, 'text/html') : root;
+    var out = {};
+    var m;
+    var creditRe = /学分[：:]\s*([0-9]+(?:\.[0-9]+)?)/;
+    var boxes = doc.querySelectorAll('div.item-box');
+    for (var i = 0; i < boxes.length; i++) {
+      var box = boxes[i];
+      var p = box.querySelector('p');
+      var name = p ? p.textContent.trim() : '';
+      if (!name) continue;
+      var spans = box.querySelectorAll('span');
+      for (var s = 0; s < spans.length; s++) {
+        var mt = creditRe.exec(spans[s].textContent || '');
+        if (mt) { out[name] = mt[1]; break; }
+      }
+    }
+    return out;
+  }
+
   var api = {
     parseCourseTable: parseCourseTable,
+    parseCredits: parseCredits,
     parseWeeks: parseWeeks,
     parsePeriods: parsePeriods,
     parseRowPeriod: parseRowPeriod,

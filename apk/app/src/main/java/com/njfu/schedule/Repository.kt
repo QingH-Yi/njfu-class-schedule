@@ -3,6 +3,8 @@ package com.njfu.schedule
 import android.content.Context
 import android.content.SharedPreferences
 import com.google.gson.Gson
+import org.json.JSONObject
+import java.util.UUID
 
 /**
  * 本地存储：课表、账号密码、设置。全部仅存本机。
@@ -22,10 +24,59 @@ object Repository {
         sp = context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
     }
 
+    // JSON 里取字符串：缺失 / null / 类型不对 一律回退默认值。
+    // 旧版本或异常数据混进来时在这里统一兜底，不让脏数据进界面。
+    private fun jStr(o: JSONObject, key: String): String {
+        val v = o.opt(key) ?: return ""
+        return if (v == JSONObject.NULL) "" else v.toString()
+    }
+
     // ---- 课表 ----
     fun loadSchedule(): Schedule {
         val json = sp.getString(K_SCHEDULE, null) ?: return Schedule()
-        return try { gson.fromJson(json, Schedule::class.java) ?: Schedule() } catch (e: Exception) { Schedule() }
+        return try {
+            val obj = JSONObject(json)
+            val arr = obj.optJSONArray("courses")
+            val seenIds = HashSet<String>()
+            val courses = buildList {
+                for (i in 0 until arr.length()) {
+                    val r = arr.optJSONObject(i) ?: continue
+                    val name = jStr(r, "name").trim()
+                    if (name.isEmpty()) continue
+                    val start = r.optInt("startPeriod", 1).coerceIn(1, 11)
+                    val id0 = jStr(r, "id").ifBlank { UUID.randomUUID().toString().take(8) }
+                    add(
+                        Course(
+                            id = if (seenIds.add(id0)) id0 else UUID.randomUUID().toString().take(8),
+                            name = name,
+                            teacher = jStr(r, "teacher"),
+                            location = jStr(r, "location"),
+                            day = r.optInt("day", 0).coerceIn(0, 7),
+                            startPeriod = start,
+                            endPeriod = r.optInt("endPeriod", start).coerceIn(1, 11).coerceAtLeast(start),
+                            weeks = r.optJSONArray("weeks")?.let { w ->
+                                (0 until w.length()).mapNotNull { k ->
+                                    val v = w.optInt(k, -1)
+                                    if (v in 1..53) v else null
+                                }.distinct().sorted()
+                            }.orEmpty(),
+                            startTime = jStr(r, "startTime"),
+                            endTime = jStr(r, "endTime"),
+                            note = jStr(r, "note"),
+                            credit = jStr(r, "credit")
+                        )
+                    )
+                }
+            }
+            Schedule(
+                term = jStr(obj, "term"),
+                termStartMonday = jStr(obj, "termStartMonday").ifBlank { Schedule().termStartMonday },
+                campus = jStr(obj, "campus").ifBlank { "xz" },
+                courses = courses
+            )
+        } catch (e: Exception) {
+            Schedule()
+        }
     }
 
     fun saveSchedule(s: Schedule) {
@@ -49,10 +100,14 @@ object Repository {
 
     fun replaceCourses(newCourses: List<Course>, term: String) {
         val cur = loadSchedule()
-        // 整表覆盖时保留用户写的备忘录（按 名称|星期|起始节 匹配旧课）
-        val notes = cur.courses.associate { "${it.name}|${it.day}|${it.startPeriod}" to it.note }
+        // 整表覆盖时保留用户写的备忘录和学分（按 名称|星期|起始节 匹配旧课）
+        val meta = cur.courses.associate {
+            val k = "${it.name}|${it.day}|${it.startPeriod}"
+            k to ((it.note ?: "") to (it.credit ?: ""))
+        }
         val merged = newCourses.map {
-            it.copy(note = notes["${it.name}|${it.day}|${it.startPeriod}"] ?: "")
+            val m = meta["${it.name}|${it.day}|${it.startPeriod}"]
+            it.copy(note = m?.first ?: "", credit = m?.second ?: "")
         }
         saveSchedule(
             cur.copy(
@@ -62,12 +117,50 @@ object Repository {
         )
     }
 
-    /** 更新某门课的备忘录 */
-    fun updateNote(id: String, note: String) {
+    /** 更新某门课的备忘录与学分 */
+    fun updateCourseMeta(id: String, note: String, credit: String) {
         val cur = loadSchedule()
         saveSchedule(cur.copy(courses = cur.courses.map {
-            if (it.id == id) it.copy(note = note) else it
+            if (it.id == id) it.copy(note = note, credit = credit) else it
         }))
+    }
+
+    /** 学分三轮抓取合并：仅采纳三轮结果完全一致的课名（防爬错） */
+    fun mergeCreditsRounds(rounds: List<Map<String, String>>): Map<String, String> {
+        if (rounds.size != 3) return emptyMap()
+        val first = rounds[0]
+        if (first.isEmpty()) return emptyMap()
+        return first.filter { (k, v) ->
+            v.isNotEmpty() && rounds.all { it[k] == v }
+        }
+    }
+
+    /** 把爬到的学分按课名写入课表，返回写入条数。
+     *  课名匹配：先精确（去空格），再把 loadkb 课名尾部的分组括号逐层剥掉兜底
+     *  （如「体育(5)（舞龙）」可匹配课表里的「体育(5)」「体育」） */
+    fun applyCredits(credits: Map<String, String>): Int {
+        if (credits.isEmpty()) return 0
+        val cur = loadSchedule()
+        val norm = { s: String -> s.replace(" ", "").replace("\u00A0", "") }
+        val tail = Regex("[（(][^（()）]*[)）]\\s*$")
+        val byNorm = HashMap<String, String>()
+        for ((name, v) in credits) {
+            var cur = name
+            byNorm.putIfAbsent(norm(cur), v)
+            while (true) {
+                val m = tail.find(cur) ?: break
+                cur = cur.substring(0, m.range.first).trim()
+                if (cur.isEmpty()) break
+                byNorm.putIfAbsent(norm(cur), v)
+            }
+        }
+        var n = 0
+        val list = cur.courses.map { c ->
+            val v = byNorm[norm(c.name)]
+            if (v != null && v.isNotEmpty()) { n++; c.copy(credit = v) } else c
+        }
+        if (n > 0) saveSchedule(cur.copy(courses = list))
+        return n
     }
 
     // ---- 账号 ----
@@ -119,6 +212,16 @@ object Repository {
     var jwUrl: String
         get() = sp.getString("jw_url", "") ?: ""
         set(v) { sp.edit().putString("jw_url", v).apply() }
+
+    /** 首次使用教程：true=下次启动显示 */
+    var showTutorial: Boolean
+        get() = sp.getBoolean("show_tutorial", true)
+        set(v) { sp.edit().putBoolean("show_tutorial", v).apply() }
+
+    /** 打开时后台检查新版本（GitHub Release），失败静默 */
+    var checkUpdate: Boolean
+        get() = sp.getBoolean("check_update", true)
+        set(v) { sp.edit().putBoolean("check_update", v).apply() }
 
     fun hasCredentials(): Boolean = user.isNotEmpty() && savedPass && pass.isNotEmpty()
 }

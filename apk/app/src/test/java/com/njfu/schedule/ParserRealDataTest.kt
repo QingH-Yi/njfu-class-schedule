@@ -14,6 +14,31 @@ class ParserRealDataTest {
         javaClass.getResourceAsStream("/kb_list.html")!!
             .readBytes().toString(Charsets.UTF_8)
 
+    private fun loadKbHtml(): String =
+        javaClass.getResourceAsStream("/kb_loadkb.html")!!
+            .readBytes().toString(Charsets.UTF_8)
+
+    @Test
+    fun parseCreditsFromPersonalCenterPage() {
+        val credits = JwxtParser.parseCredits(loadKbHtml())
+        println("学分条目: $credits")
+        // 个人中心课表悬停浮层里的 13 门课，学分齐全（含小数）
+        assertEquals(13, credits.size)
+        assertEquals("2", credits["电气控制与PLC"])
+        assertEquals("0.25", credits["形势与政策（5）"])
+        assertEquals("0.5", credits["体育(5)（舞龙）"])
+        assertEquals("3", credits["电力系统暂态分析"])
+        assertEquals("1", credits["工程经济管理概论[社会认知类]（分组01）"])
+
+        // 三轮一致合并：只有三轮都一致的键才保留
+        val r1 = credits
+        val r2 = credits - "体育(5)（舞龙）"
+        val r3 = credits
+        val merged = Repository.mergeCreditsRounds(listOf(r1, r2, r3))
+        assertTrue("不一致的键应被剔除", "体育(5)（舞龙）" !in merged)
+        assertEquals("2", merged["电气控制与PLC"])
+    }
+
     @Test
     fun parseRealTimetablePage() {
         val r = JwxtParser.parseHtml(html())

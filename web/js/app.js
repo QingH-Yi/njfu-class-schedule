@@ -644,10 +644,52 @@
   }
 
   /* ---------- 接收书签回传（分屏 iframe 或独立窗口） ---------- */
+  function applyCredits(map) {
+    var norm = function (s) { return String(s).replace(/\s|\u00A0/g, ''); };
+    var tail = /[（(][^（()）]*[)）]\s*$/;
+    var byNorm = {};
+    Object.keys(map).forEach(function (name) {
+      var cur = name;
+      if (!(norm(cur) in byNorm)) byNorm[norm(cur)] = map[name];
+      // 剥掉尾部分组括号逐层兜底：「体育(5)（舞龙）」可匹配课表里的「体育(5)」
+      for (;;) {
+        var m = tail.exec(cur);
+        if (!m) break;
+        cur = cur.slice(0, m.index).trim();
+        if (!cur) break;
+        if (!(norm(cur) in byNorm)) byNorm[norm(cur)] = map[name];
+      }
+    });
+    var n = 0;
+    state.courses.forEach(function (c) {
+      var v = byNorm[norm(c.name)];
+      if (v) { c.credit = v; n++; }
+    });
+    return n;
+  }
+
   function listenForBookmarklet() {
     window.addEventListener('message', function (e) {
       var d = e.data;
       if (!d || d.source !== 'njfu-schedule-import') return;
+      // 学分回传：三轮结果完全一致才采信（与 App 端同一约定）
+      if (d.type === 'credits') {
+        var rounds = (d.rounds || []).map(function (h) {
+          try { return h ? PARSER.parseCredits(h) : {}; } catch (err) { return {}; }
+        });
+        var merged = {};
+        if (rounds.length === 3 && Object.keys(rounds[0]).length) {
+          Object.keys(rounds[0]).forEach(function (k) {
+            var v = rounds[0][k];
+            if (v && rounds[1][k] === v && rounds[2][k] === v) merged[k] = v;
+          });
+        }
+        var nn = Object.keys(merged).length ? applyCredits(merged) : 0;
+        if (nn > 0) { save(); render(); }
+        if (nn > 0) setDrawerStatus('✔ 学分爬取完成：' + nn + ' 门课写入（三轮校验一致）。', 'ok');
+        else setDrawerStatus('学分未爬到（三轮结果不一致或接口未开放），课表本身已导入。', 'err');
+        return;
+      }
       var doc = new DOMParser().parseFromString(d.html, 'text/html');
       var result = PARSER.parseCourseTable(doc);
       if (!result) {
@@ -656,8 +698,7 @@
         return;
       }
       importFromJwgl(result);
-      setDrawerStatus('✔ 抓取成功：解析到 ' + result.courses.length + ' 门课，已保存到左边课表。', 'ok');
-      closeModal('importModal');
+      setDrawerStatus('✔ 抓取成功：解析到 ' + result.courses.length + ' 门课，正在继续爬学分…', 'ok');
     });
   }
 

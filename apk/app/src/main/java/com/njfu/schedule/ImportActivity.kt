@@ -149,8 +149,32 @@ class ImportActivity : ComponentActivity() {
 
     private fun doGrab() {
         status.text = "正在抓取当前页面…"
+        synchronized(creditRounds) { creditRounds.clear() }
+        grabbingCredits = false
+        importFinished = false
+        lastAdded = 0
         webView.evaluateJavascript(MainActivity.GRAB_JS, null)
     }
+
+    /** 学分导入收尾（三轮齐了或超时兜底） */
+    private fun finishImport(creditsApplied: Int) {
+        if (importFinished || isFinishing) return
+        importFinished = true
+        val msg = if (creditsApplied > 0)
+            "导入成功：新增 $lastAdded 门课 · 爬到学分 $creditsApplied 门"
+        else
+            "导入成功：新增 $lastAdded 门课 · 学分未爬到（下次打开会自动补）"
+        status.text = msg
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+        setResult(RESULT_OK)
+        // 稍作停留让用户看到结果
+        webView.postDelayed({ finish() }, 1200)
+    }
+
+    private val creditRounds = ArrayList<Map<String, String>>()
+    private var grabbingCredits = false
+    private var importFinished = false
+    private var lastAdded = 0
 
     inner class GrabInterface {
         @JavascriptInterface
@@ -161,10 +185,47 @@ class ImportActivity : ComponentActivity() {
                     status.text = "没解析到课表。请先进「学期理论课表」选好学期，再抓取。"
                     Toast.makeText(this@ImportActivity, "未识别到课表", Toast.LENGTH_SHORT).show()
                 } else {
-                    val added = Repository.addCourses(result.courses, result.term)
-                    Toast.makeText(this@ImportActivity, "导入成功：新增 $added 门课", Toast.LENGTH_LONG).show()
-                    setResult(RESULT_OK)
-                    finish()
+                    lastAdded = Repository.addCourses(result.courses, result.term)
+                    // 课表到手后接着抓三轮学分（同一接口抓三次，一致才采信）
+                    grabbingCredits = true
+                    importFinished = false
+                    status.text = "已导入 $lastAdded 门课，正在爬学分（第1/3轮）…"
+                    val js = loadKbJs(result.term.ifEmpty { Repository.loadSchedule().term })
+                    for (d in longArrayOf(500, 3000, 5500)) {
+                        webView.postDelayed({
+                            try { webView.evaluateJavascript(js, null) } catch (_: Exception) {}
+                        }, d)
+                    }
+                    // 兜底：学分 12 秒内没抓齐也完成导入（不影响课表本身）
+                    webView.postDelayed({ finishImport(0) }, 12000)
+                }
+            }
+        }
+
+        /** 收到一轮个人中心课表 HTML（悬停浮层带学分） */
+        @JavascriptInterface
+        fun receiveKb(html: String) {
+            if (!grabbingCredits || html.isEmpty() || importFinished) return
+            val map = try {
+                JwxtParser.parseCredits(html)
+            } catch (e: Exception) {
+                emptyMap<String, String>()
+            }
+            var done = false
+            synchronized(creditRounds) {
+                if (creditRounds.size < 3) {
+                    creditRounds.add(map)
+                    done = creditRounds.size == 3
+                }
+            }
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                if (done) {
+                    // 三轮完全一致的课名才采纳
+                    val merged = Repository.mergeCreditsRounds(creditRounds.toList())
+                    finishImport(Repository.applyCredits(merged))
+                } else {
+                    status.text = "正在爬学分（第${creditRounds.size + 1}/3轮）…"
                 }
             }
         }

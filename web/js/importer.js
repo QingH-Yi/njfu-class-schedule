@@ -34,11 +34,42 @@
         tableHtml: best ? best.outerHTML : ''
       };
       target.postMessage(payload, '*');
-      document.title = '✔ 已回传课表';
-      // 独立窗口则自动关闭；分屏 iframe 交给父页面处理
-      if (!(window.parent && window.parent !== window)) {
-        setTimeout(function () { try { window.close(); } catch (e) {} }, 600);
-      }
+      document.title = '✔ 已回传课表，正在抓学分…';
+
+      // 接着顺序抓三轮「个人中心课表」（悬停浮层 div.item-box 里带学分），
+      // 三轮在网页端比对一致才采信（与 App 端同一约定）。
+      var done = function () {
+        if (!(window.parent && window.parent !== window)) {
+          setTimeout(function () { try { window.close(); } catch (e) {} }, 300);
+        }
+      };
+      var f = function (u) {
+        return fetch(u, { credentials: 'include' })
+          .then(function (r) { return r.text(); })
+          .catch(function () { return ''; });
+      };
+      var one = function () {
+        return f('/jsxsd/framework/xsMainV_new.htmlx?t1=1').then(function (t) {
+          var m = t.match(/class="layui-this"[^>]*data-value="([0-9A-Fa-f]{32})"/) ||
+                  t.match(/data-value="([0-9A-Fa-f]{32})"[^>]*class="layui-this"/) ||
+                  t.match(/data-value="([0-9A-Fa-f]{32})"/);
+          if (!m) return '';
+          var tm = ((document.body.innerText || '').match(/\d{4}-\d{4}-[12]/) || [''])[0];
+          var q = 'rq=all&sjmsValue=' + m[1] + (tm ? '&xnxqid=' + encodeURIComponent(tm) : '') + '&xswk=false';
+          return f('/jsxsd/framework/mainV_index_loadkb.htmlx?' + q);
+        });
+      };
+      var rounds = [], n = 0;
+      var next = function () {
+        if (n >= 3) {
+          try { target.postMessage({ source: 'njfu-schedule-import', type: 'credits', rounds: rounds }, '*'); } catch (e) {}
+          done();
+          return;
+        }
+        n++;
+        one().then(function (h) { rounds.push(h || ''); next(); });
+      };
+      next();
     } catch (err) {
       alert('导入出错：' + err.message);
     }

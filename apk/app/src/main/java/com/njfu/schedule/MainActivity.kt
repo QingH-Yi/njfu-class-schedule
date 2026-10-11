@@ -362,14 +362,13 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                                 )
                             }
                         }
-                        Spacer(Modifier.height(3.dp))
-                        val timeText = if (c.day == 0) "周一至周五 · 第1-8节"
-                        else "${dayName(c.day)} 第${c.startPeriod}-${c.endPeriod}节" +
-                                if (t1.isNotEmpty() && t2.isNotEmpty()) " · $t1-$t2" else ""
-                        Text(timeText, fontSize = 12.sp, color = color.second.copy(alpha = 0.8f))
                     }
                 }
                 Spacer(Modifier.height(12.dp))
+                val timeText = if (c.day == 0) "周一至周五 · 第1-8节"
+                else "${dayName(c.day)} 第${c.startPeriod}-${c.endPeriod}节" +
+                        if (t1.isNotEmpty() && t2.isNotEmpty()) " · $t1-$t2" else ""
+                InfoRow("⏰", "节次", timeText, th)
                 InfoRow("📍", "教室", c.location, th)
                 InfoRow("👨‍🏫", "老师", c.teacher, th)
                 InfoRow("🔁", "周次", weekLabel(c.weeks), th)
@@ -591,12 +590,12 @@ fun TimetableView(
                             )
                             val t = CampusTimes.times(schedule.campus)[p]
                             Text(
-                                t?.first ?: "", fontSize = 7.5.sp,
+                                t?.first ?: "", fontSize = 8.sp,
                                 color = if (nowP) th.accent else th.textSecondary
                             )
                             Text(
-                                t?.second ?: "", fontSize = 7.5.sp,
-                                color = if (nowP) th.accent else th.textSecondary.copy(alpha = 0.6f)
+                                t?.second ?: "", fontSize = 8.sp,
+                                color = if (nowP) th.accent else th.textSecondary
                             )
                         }
                     }
@@ -658,6 +657,12 @@ fun TimetableView(
                                                     if (c.location.isNotEmpty()) {
                                                         Text(
                                                             "@${c.location}", fontSize = 9.sp, lineHeight = 11.sp,
+                                                            color = color.second.copy(alpha = 0.75f)
+                                                        )
+                                                    }
+                                                    if (c.teacher.isNotEmpty()) {
+                                                        Text(
+                                                            c.teacher, fontSize = 9.sp, lineHeight = 11.sp,
                                                             color = color.second.copy(alpha = 0.75f)
                                                         )
                                                     }

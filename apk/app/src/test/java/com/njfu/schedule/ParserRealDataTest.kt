@@ -6,7 +6,7 @@ import org.junit.Test
 
 /**
  * 用南林教务系统真实课表页面（/jsxsd/xskb/xskb_list.do，2026-2027-1 学期，
- * 学号 <你的学号>）验证 JwxtParser：期望结果由逐格核对得出（17 门，去重后）。
+ * 学号 2450803130）验证 JwxtParser：期望结果由逐格核对得出（17 门，去重后）。
  */
 class ParserRealDataTest {
 

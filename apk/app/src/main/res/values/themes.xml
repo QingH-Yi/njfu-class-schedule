@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose 应用：不需要 AppCompat，用系统 Material 主题即可 -->
+    <style name="Theme.NJFUSchedule" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- 状态栏颜色由代码按主题设置（浅色/深色/反色）动态决定 -->
+    </style>
+</resources>

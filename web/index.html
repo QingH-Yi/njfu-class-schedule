@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>南林课程表</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🎓</span>
+      <div>
+        <h1>南林课程表</h1>
+        <div class="sub" id="weekInfo">加载中…</div>
+      </div>
+    </div>
+    <div class="toolbar">
+      <select id="weekSel" title="选择要查看的周次"></select>
+      <select id="campusSel" title="选择校区作息时间">
+        <option value="xz">新庄校区(本部)</option>
+        <option value="ha">淮安校区</option>
+        <option value="bm">白马校区</option>
+      </select>
+      <button class="btn primary" data-act="add">＋ 添加课程</button>
+      <button class="btn" data-act="import">📥 从教务导入</button>
+      <button class="btn" data-act="openCalendar">📅 校历</button>
+      <div class="menu">
+        <button class="btn ghost" data-menu>更多 ▾</button>
+        <div class="menu-list">
+          <button data-act="export">⬇ 导出备份 (JSON)</button>
+          <button data-act="importJsonFile">⬆ 从备份恢复</button>
+          <button data-act="print">🖨 打印 / 存 PDF</button>
+          <button data-act="settings">⚙ 设置学期</button>
+        </div>
+      </div>
+      <input type="file" id="jsonFile" accept=".json" hidden>
+    </div>
+  </header>
+
+  <main id="grid" class="grid"></main>
+
+  <p class="hint">提示：点击彩色课程卡片可编辑；点击空白格子可快速添加一门课。</p>
+
+  <!-- ============ 导入向导弹窗 ============ -->
+  <div class="modal" id="importModal">
+    <div class="modal-box">
+      <h2>📥 从教务系统导入课表</h2>
+
+      <!-- EXE 版专用：一键全自动导入（仅在桌面程序里显示） -->
+      <section id="exeImport" hidden>
+        <h3>① 一键导入（推荐）</h3>
+        <p>填一次学号密码（仅存在本机），之后点一下就能自动登录教务系统并抓取课表。</p>
+        <div class="row">
+          <label>学号<input id="exeUser" placeholder="学号 / 账号"></label>
+          <label>密码<input id="exePass" type="password" placeholder="教务系统密码"></label>
+        </div>
+        <div class="modal-actions" style="margin-top:8px">
+          <button class="btn" id="exeSaveCred">💾 保存账号</button>
+          <button class="btn primary" id="exeImportBtn">🚀 一键导入课表</button>
+        </div>
+        <p class="tip" id="exeStatus">提示：点"一键导入"会弹出教务窗口自动登录；若出现验证码，手动输入后点右上角"抓取课表"。</p>
+        <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+      </section>
+
+      <section id="manualImport">
+        <h3>① 首次准备：把"导入按钮"拖到书签栏</h3>
+        <p>把下面这个按钮
+          <a id="bookmarkletLink" class="bookmarklet js-bookmarklet" draggable="true"
+             ondragstart="event.dataTransfer.setData('text/plain', this.href);">📎 导入课表到网页</a>
+          用鼠标<strong>拖动</strong>到浏览器顶部的书签栏里（如果没看到书签栏，按 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> 打开）。<em>只需做一次。</em></p>
+      </section>
+
+      <section>
+        <h3>② 每次导入</h3>
+        <ol>
+          <li>点下面的按钮，会新开一个教务系统标签页：
+            <a class="btn primary inline" href="https://jwxt.njfu.edu.cn/jsxsd/framework/xsMainV.jsp" target="_blank" rel="noopener">打开教务系统 ↗</a>
+          </li>
+          <li>在教务系统里登录，进入「<strong>学生课表查询</strong>」页面，选好学期，让课表显示出来。</li>
+          <li>点击书签栏里的「📎 导入课表到网页」。课表会自动回传到本页并保存。</li>
+        </ol>
+        <p class="tip">💡 也可以不拖书签：在教务系统课表页按 <kbd>Ctrl</kbd>+<kbd>U</kbd>（或右键"查看网页源代码"），全选复制整页源码，粘贴到下面的框里手动导入。</p>
+        <textarea id="pasteArea" placeholder="在此粘贴教务系统课表页面的 HTML 源码…"></textarea>
+        <button class="btn" id="pasteImportBtn">解析粘贴内容</button>
+      </section>
+
+      <div class="modal-actions">
+        <button class="btn ghost" data-act="closeImport">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 课程编辑弹窗 ============ -->
+  <div class="modal" id="courseModal">
+    <div class="modal-box">
+      <h2 id="courseModalTitle">添加课程</h2>
+      <form id="courseForm">
+        <label>课程名称<input name="name" required placeholder="如：计算机网络"></label>
+        <div class="row">
+          <label>星期
+            <select name="day">
+              <option value="1">周一</option><option value="2">周二</option><option value="3">周三</option>
+              <option value="4">周四</option><option value="5">周五</option><option value="6">周六</option>
+              <option value="7">周日</option>
+            </select>
+          </label>
+          <label>老师<input name="teacher" placeholder="如：张三"></label>
+        </div>
+        <div class="row">
+          <label>开始节次<input name="startPeriod" type="number" min="1" max="12" value="1"></label>
+          <label>结束节次<input name="endPeriod" type="number" min="1" max="12" value="2"></label>
+        </div>
+        <div class="row">
+          <label>开始时间<input name="startTime" type="time"></label>
+          <label>结束时间<input name="endTime" type="time"></label>
+        </div>
+        <label>上课地点<input name="location" placeholder="如：教九 101"></label>
+
+        <div class="weeks">
+          <div class="weeks-head">
+            <span>上课周次</span>
+            <span class="weeks-ops">
+              <button type="button" class="mini" data-act="quickWeeks">全选</button>
+              <button type="button" class="mini" data-act="quickOdd">单周</button>
+              <button type="button" class="mini" data-act="quickEven">双周</button>
+              <button type="button" class="mini" data-act="clearWeeks">清空</button>
+            </span>
+          </div>
+          <div id="weekPicker" class="weekPicker"></div>
+        </div>
+
+        <div class="modal-actions">
+          <button type="button" class="btn danger" data-act="delCourse">删除</button>
+          <span class="spacer"></span>
+          <button type="button" class="btn ghost" data-act="closeCourse">取消</button>
+          <button type="submit" class="btn primary">保存</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============ 设置弹窗 ============ -->
+  <div class="modal" id="settingsModal">
+    <div class="modal-box">
+      <h2>⚙ 学期设置</h2>
+      <label>学期名称<input id="termInput" placeholder="如：2025-2026-1"></label>
+      <label>本学期第一周的<strong>周一</strong>日期
+        <input id="startInput" type="date">
+        <small>用于自动计算"当前周"。填第一周上课那个周一的日期。</small>
+      </label>
+      <label>手动指定当前周（可选，优先级更高）
+        <input id="overrideInput" type="number" min="1" max="30" placeholder="留空则自动计算">
+      </label>
+      <div class="modal-actions">
+        <button class="btn ghost" data-act="closeSettings">取消</button>
+        <button class="btn primary" data-act="saveSettings">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 课程详情弹窗 ============ -->
+  <div class="modal" id="detailModal">
+    <div class="modal-box detail-box">
+      <div class="detail-head">
+        <span id="detailColor" class="detail-dot"></span>
+        <h2 id="detailTitle">课程</h2>
+      </div>
+      <div id="detailBody" class="detail-body"></div>
+      <div class="modal-actions">
+        <button class="btn danger" data-act="delFromDetail">删除</button>
+        <span class="spacer"></span>
+        <button class="btn ghost" data-act="closeDetail">关闭</button>
+        <button class="btn primary" data-act="editFromDetail">编辑</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 校历弹窗 ============ -->
+  <div class="modal" id="calModal">
+    <div class="modal-box cal-box">
+      <h2>📅 南京林业大学校历（2026-2027 第一学期）</h2>
+      <div class="cal-head"><span>周次</span><span>周一 – 周日</span><span>本周放假</span></div>
+      <div id="calBody" class="cal-body"></div>
+      <div class="modal-actions">
+        <button class="btn ghost" data-act="closeCal">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 分屏导入抽屉（右侧显示教务系统） ============ -->
+  <aside id="importDrawer" class="drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <span class="drawer-title">🏫 教务系统（分屏导入）</span>
+      <span class="drawer-ops">
+        <a class="mini" href="https://jwxt.njfu.edu.cn/jsxsd/framework/xsMainV.jsp" target="_blank" rel="noopener">新窗口打开</a>
+        <button class="mini" data-act="closeDrawer">收起 ✕</button>
+      </span>
+    </div>
+    <div class="drawer-steps">
+      <b>① 首次：</b>把
+      <a class="bookmarklet small js-bookmarklet" draggable="true"
+         ondragstart="event.dataTransfer.setData('text/plain', this.href);">📎 抓取课表</a>
+      拖到书签栏（只需一次，没看到书签栏按 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>）。<br>
+      <b>② 每次：</b>在右侧登录并进入「学生课表查询」选好学期，然后点书签栏的「抓取课表」，课程自动出现在左边。
+      <span class="drawer-alt">抓不到？<a data-act="openPaste">改用粘贴源码导入</a></span>
+    </div>
+    <iframe id="jwglFrame" class="drawer-frame" title="教务系统"></iframe>
+    <div id="importStatus" class="drawer-status">就绪。请在右侧登录教务系统。</div>
+  </aside>
+
+  <script src="js/parser.js"></script>
+  <script src="js/importer.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+*.jks
+local.properties
+.gradle/
+build/
+node_modules/
+*.apk
+kb_list.html
+hs_err_pid*.log

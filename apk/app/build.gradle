@@ -12,8 +12,8 @@ android {
         applicationId "com.njfu.schedule"
         minSdk 26
         targetSdk 35
-        versionCode 3
-        versionName "1.2"
+        versionCode 20
+        versionName "2.0"
     }
 
     signingConfigs {
@@ -46,6 +46,11 @@ android {
     buildFeatures {
         compose true
     }
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+        }
+    }
     packaging {
         resources {
             excludes += ['META-INF/AL2.0', 'META-INF/LGPL2.1']
@@ -71,4 +76,13 @@ dependencies {
 
     // JVM 单元测试（解析器回归）
     testImplementation 'junit:junit:4.13.2'
+
+    // Robolectric：在 JVM 上跑安卓/Compose（无需模拟器 / KVM），用于 UI 自动化回归
+    testImplementation 'org.robolectric:robolectric:4.13'
+    testImplementation 'androidx.test:core:1.6.1'
+    testImplementation 'androidx.test.ext:junit:1.2.1'
+    testImplementation composeBom
+    testImplementation 'androidx.compose.ui:ui-test-junit4'
+    debugImplementation composeBom
+    debugImplementation 'androidx.compose.ui:ui-test-manifest'
 }

@@ -24,7 +24,7 @@
   function innerText(html) {
     return (html || '')
       .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/(div|p|tr|td|li)>/gi, '\n')
+      .replace(/<\/(div|p|tr|td|li|span|font|a|b|strong|i|em)>/gi, '\n')
       .replace(/<[^>]+>/g, '')
       .replace(/&nbsp;/gi, ' ')
       .replace(/&amp;/gi, '&')
@@ -124,9 +124,11 @@
     var lines = innerText(html).filter(function (l) {
       // 强智格子里的"通知单编号/班级/备注"管理元数据、横线分隔行、
       // "(讲课:16)"/"(舞龙)"等括号备注不是课程字段
-      return !/^(通知单编号|班级|备注)/.test(l) &&
+      return !/^(通知单编号|班级|备注|学分)/.test(l) &&
              !/^[-—=_]{3,}/.test(l) &&
-             !/^\(.*\)$/.test(l);
+             !/^\(.*\)$/.test(l) &&
+             // 个人中心课表页的卡片名会被服务端截断成 "电气控制与..."，丢弃这种残名
+             !/[.．…]{2,}$/.test(l);
     });
     if (!lines.length) return null;
 
@@ -141,7 +143,9 @@
       var pl = parsePeriodList(l);
       if (pl && !periodList) {
         periodList = pl;
-        var wkSame = parseWeeks(l);
+        if (course.startPeriod == null) { course.startPeriod = pl[0]; course.endPeriod = pl[pl.length - 1]; }
+        // 该行可能同时带周次；先剥掉 "01~02~03小节" 再取周次，避免小节号混进周次
+        var wkSame = parseWeeks(String(l).replace(/\d+(?:\s*[-~—–]\s*\d+)+\s*小节/g, ' '));
         if (wkSame && !course.weeks) course.weeks = wkSame;
         used[i] = true; continue;
       }
@@ -156,7 +160,7 @@
       if (t && !course.startTime) { course.startTime = t.startTime; course.endTime = t.endTime; used[i] = true; continue; }
       // 4) 传统 "第1-2节"
       var p = parsePeriods(l);
-      if (p && /节/.test(l) && !used[i]) { course.startPeriod = p.start; course.endPeriod = p.end; used[i] = true; continue; }
+      if (p && /节/.test(l) && !used[i]) { if (course.startPeriod == null) { course.startPeriod = p.start; course.endPeriod = p.end; } used[i] = true; continue; }
       // 5) 教师："教师：戴斌" / "老师:张三"
       var tm = l.match(/^(?:教师|老师|任课)\s*[:：]\s*(.+)$/);
       if (tm && !course.teacher) { course.teacher = tm[1].trim(); used[i] = true; continue; }

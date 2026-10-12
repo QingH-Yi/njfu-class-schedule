@@ -832,6 +832,12 @@ fun TimetableView(
                         }
                     }
                 }
+                // 左列最下方（第 12 格）：与右侧"安排"行对齐的标签
+                if (schedule.courses.any { it.day == 0 }) {
+                    Box(Modifier.height(slotH * 0.78f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text("安排", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = th.textSecondary)
+                    }
+                }
             }
             // 左右滑动切换周次，每页一周的 7 列课程
             HorizontalPager(
@@ -970,9 +976,6 @@ fun TimetableView(
                                     .padding(vertical = 3.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Box(Modifier.width(46.dp), contentAlignment = Alignment.Center) {
-                                    Text("安排", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = th.textSecondary)
-                                }
                                 Row(
                                     Modifier.weight(1f).fillMaxHeight(),
                                     horizontalArrangement = Arrangement.spacedBy(3.dp)

@@ -18,6 +18,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -27,6 +29,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
+import androidx.compose.foundation.pager.PagerSnapDistance
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -698,6 +702,14 @@ fun TimetableView(
         initialPage = (currentWeek - 1).coerceIn(0, 52),
         pageCount = { 53 }
     )
+    // 横向翻周手感：默认要拖过半屏才翻页（snapPositionalThreshold=0.5）、吸附动画偏软。
+    // 这里调"更灵敏 + 更跟手"：拖过约 1/3 屏就翻页，吸附用无回弹的中等刚度 spring（收得更利落）。
+    val pagerFling = PagerDefaults.flingBehavior(
+        state = pagerState,
+        pagerSnapDistance = PagerSnapDistance.atMost(1),
+        snapAnimationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
+        snapPositionalThreshold = 0.34f
+    )
     val viewedWeek by remember { derivedStateOf { pagerState.currentPage + 1 } }
     val scope = rememberCoroutineScope()
     val slotH = 58.dp
@@ -747,7 +759,9 @@ fun TimetableView(
             // 切换 周一/周日 起点时两边一起左移/右移一列，始终对齐
             val cellW = maxWidth / 7f
             val cellPx = with(LocalDensity.current) { cellW.toPx() }.coerceAtLeast(1f)
-            // 课表(pager)横向位置 → 日期条对应位置，逐帧连续锁死
+            // 课表(pager)横向位置 → 日期条对应位置，逐帧连续锁死。
+            // 用 requestScrollToItem（非阻塞、不挂起、只提交一次滚动请求）而不是 scrollToItem，
+            // 避免每帧与 pager 抢布局（原先每帧一次 scrollToItem 是横向滑动掉帧的主因）。
             LaunchedEffect(pagerState, startSunday, cellPx) {
                 val maxIdx = 53 * 7 - 1
                 snapshotFlow { pagerState.currentPage + pagerState.currentPageOffsetFraction }.collect { p ->
@@ -755,7 +769,7 @@ fun TimetableView(
                     val idx = d.toInt().coerceIn(0, maxIdx)
                     val off = ((d - idx) * cellPx).toInt().coerceAtLeast(0)
                     try {
-                        headerState.scrollToItem(idx, off)
+                        headerState.requestScrollToItem(idx, off)
                     } catch (e: Exception) {
                     }
                 }
@@ -856,6 +870,7 @@ fun TimetableView(
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.weight(1f).testTag("weekPager"),
+                flingBehavior = pagerFling,
                 beyondViewportPageCount = 1
             ) { page ->
                 val week = page + 1

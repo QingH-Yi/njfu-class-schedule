@@ -64,7 +64,8 @@ object Repository {
                             endTime = jStr(r, "endTime"),
                             note = jStr(r, "note"),
                             credit = jStr(r, "credit"),
-                            kind = jStr(r, "kind")
+                            kind = jStr(r, "kind"),
+                            edited = r.optBoolean("edited", false)
                         )
                     )
                 }
@@ -99,16 +100,24 @@ object Repository {
         return added
     }
 
-    fun replaceCourses(newCourses: List<Course>, term: String) {
+    fun replaceCourses(newCourses: List<Course>, term: String, keepEdited: Boolean = false) {
         val cur = loadSchedule()
         // 整表覆盖时保留用户写的备忘录和学分（按 名称|星期|起始节 匹配旧课）
         val meta = cur.courses.associate {
             val k = "${it.name}|${it.day}|${it.startPeriod}"
             k to ((it.note ?: "") to (it.credit ?: ""))
         }
-        val merged = newCourses.map {
+        var merged = newCourses.map {
             val m = meta["${it.name}|${it.day}|${it.startPeriod}"]
             it.copy(note = m?.first ?: "", credit = m?.second ?: "")
+        }
+        if (keepEdited) {
+            // 保留用户手动改过的课：先去掉教务里同位置(名称|星期|起始节)的，再把手改的追加回去
+            val edited = cur.courses.filter { it.edited }
+            if (edited.isNotEmpty()) {
+                val keys = edited.map { "${it.name}|${it.day}|${it.startPeriod}" }.toSet()
+                merged = merged.filter { "${it.name}|${it.day}|${it.startPeriod}" !in keys } + edited
+            }
         }
         saveSchedule(
             cur.copy(
@@ -117,6 +126,9 @@ object Repository {
             )
         )
     }
+
+    /** 被用户手动编辑过的课程 */
+    fun editedCourses(): List<Course> = loadSchedule().courses.filter { it.edited }
 
     /** 更新某门课的备忘录与学分 */
     fun updateCourseMeta(id: String, note: String, credit: String) {
@@ -127,35 +139,42 @@ object Repository {
     }
 
     /**
-     * 编辑课程的节次 / 周次。
+     * 编辑课程（名称/老师/教室/节次/周次）。
      * onlyThisWeek=false：整学期都改（直接改这门课）。
-     * onlyThisWeek=true ：只改本周 —— 把这周从原课周次里拆出来，单独生成一条改了节次的课。
+     * onlyThisWeek=true ：只改本周 —— 把这周从原课周次里拆出来，单独生成一条改了内容的课。
+     * 改过之后标记 edited=true，重抓时好询问用户是否保留。
      */
-    fun editCourse(course: Course, startP: Int, endP: Int, weeks: List<Int>, onlyThisWeek: Boolean, currentWeek: Int) {
+    fun editCourse(
+        course: Course, name: String, teacher: String, location: String, day: Int,
+        startP: Int, endP: Int, weeks: List<Int>, onlyThisWeek: Boolean, currentWeek: Int
+    ) {
         val cur = loadSchedule()
         val s = startP.coerceIn(1, 11)
         val e = endP.coerceIn(s, 11)
+        val d = if (course.day == 0) 0 else day.coerceIn(1, 7)
         val idx = cur.courses.indexOfFirst { it.id == course.id }
         if (idx < 0) return
         val orig = cur.courses[idx]
         val list = cur.courses.toMutableList()
+        val nm = name.trim().ifEmpty { orig.name }
         if (onlyThisWeek) {
-            // weeks 为空 = 全学期，视作 1..53
             val origWeeks = if (orig.weeks.isEmpty()) (1..53).toList() else orig.weeks
             val remain = origWeeks.filter { it != currentWeek }
             if (remain.isEmpty()) {
-                list[idx] = orig.copy(startPeriod = s, endPeriod = e, weeks = listOf(currentWeek))
+                list[idx] = orig.copy(name = nm, teacher = teacher.trim(), location = location.trim(),
+                    day = d, startPeriod = s, endPeriod = e, weeks = listOf(currentWeek), edited = true)
             } else {
                 list[idx] = orig.copy(weeks = remain.sorted())
-                list.add(
-                    orig.copy(
-                        id = UUID.randomUUID().toString().take(8),
-                        startPeriod = s, endPeriod = e, weeks = listOf(currentWeek)
-                    )
-                )
+                list.add(orig.copy(
+                    id = UUID.randomUUID().toString().take(8),
+                    name = nm, teacher = teacher.trim(), location = location.trim(), day = d,
+                    startPeriod = s, endPeriod = e, weeks = listOf(currentWeek), edited = true
+                ))
             }
         } else {
-            list[idx] = orig.copy(startPeriod = s, endPeriod = e, weeks = weeks.filter { it in 1..53 }.distinct().sorted())
+            list[idx] = orig.copy(name = nm, teacher = teacher.trim(), location = location.trim(),
+                day = d, startPeriod = s, endPeriod = e,
+                weeks = weeks.filter { it in 1..53 }.distinct().sorted(), edited = true)
         }
         saveSchedule(cur.copy(courses = list))
     }
@@ -209,7 +228,7 @@ object Repository {
         get() = sp.getBoolean(K_SAVED_PASS, false)
         set(v) { sp.edit().putBoolean(K_SAVED_PASS, v).apply() }
     var autoUpdate: Boolean
-        get() = sp.getBoolean(K_AUTO, true)
+        get() = sp.getBoolean(K_AUTO, false)   // 默认关闭（用户要求）
         set(v) { sp.edit().putBoolean(K_AUTO, v).apply() }
 
     /** 手动指定的当前教学周，0 = 自动按日期推算 */

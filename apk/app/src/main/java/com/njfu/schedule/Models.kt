@@ -17,7 +17,9 @@ data class Course(
     val note: String? = null,  // 用户备忘录（仅存本机；旧数据无此字段，Gson 会填 null）
     val credit: String? = null, // 学分（用户自填）
     // day=0 时区分："" 或 "intern"=实习（盖周一~周五第1-8节大卡片）；"lab"=实验（第11节下方加一行）
-    val kind: String = ""
+    val kind: String = "",
+    // 是否被用户手动编辑过（重抓时据此询问是否保留）
+    val edited: Boolean = false
 ) {
     val isIntern: Boolean get() = day == 0 && kind != "lab"
     val isLab: Boolean get() = day == 0 && kind == "lab"

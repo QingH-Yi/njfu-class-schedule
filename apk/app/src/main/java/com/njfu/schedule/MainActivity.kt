@@ -20,6 +20,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
@@ -206,7 +207,8 @@ class MainActivity : ComponentActivity() {
                 return
             }
             val r = tableResults[0]
-            Repository.replaceCourses(r.courses, r.term)
+            // 用户手动改过课表：保留修改，别被教务覆盖
+            Repository.replaceCourses(r.courses, r.term, keepEdited = Repository.editedCourses().isNotEmpty())
             runOnUiThread {
                 refreshSignal.value++
                 startCreditRounds(r.term.ifEmpty { Repository.loadSchedule().term })
@@ -550,7 +552,7 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                         .heightIn(max = 420.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
-                    if (c.day == 0) InfoRow("⏰", "节次", "周一至周五 · 第1-8节", th)
+                    if (c.day == 0) InfoRow("⏰", "安排", "整周（周一至周五）", th)
                     else PeriodRows(c, sameName, schedule.campus, th)
                     InfoRow("📍", "教室", c.location, th)
                     InfoRow("👨‍🏫", "老师", c.teacher, th)
@@ -609,11 +611,12 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
         EditCourseDialog(
             course = cur, currentWeek = currentWeek, th = th,
             onDismiss = { editTarget = null },
-            onConfirm = { startP, endP, weeks, onlyThisWeek ->
-                Repository.editCourse(cur, startP, endP, weeks, onlyThisWeek, currentWeek)
+            onConfirm = { name, teacher, location, day, startP, endP, weeks, onlyThisWeek ->
+                Repository.editCourse(cur, name, teacher, location, day, startP, endP, weeks, onlyThisWeek, currentWeek)
                 schedule = Repository.loadSchedule()
                 editTarget = null
                 detail = null
+                refreshState.value++   // 整界面重载，确保生效
             }
         )
     }
@@ -847,8 +850,6 @@ fun TimetableView(
                 }
                 val byDay = inWeek.groupBy { it.day }
                 val othersByDay = otherWeek.groupBy { it.day }
-                val interns = inWeek.filter { it.isIntern }
-                val labs = inWeek.filter { it.isLab }
                 val dates = weekDates(schedule.termStartMonday, week)
                 Column(Modifier.fillMaxSize().verticalScroll(vs)) {
                     Box(Modifier.fillMaxWidth()) {
@@ -957,68 +958,10 @@ fun TimetableView(
                                 }
                             }
                         }
-                        // 整周实习/课程设计：盖在 周一~周五 × 第1-8节 上的大卡片。
-                        // 一周起点为周日时周一在第 2 列 → 整块右移一列，始终与 周一~周五 对齐、不乱跳
-                        if (interns.isNotEmpty()) {
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .height(slotH * 8)
-                                    .padding(horizontal = 3.dp, vertical = 3.dp)
-                            ) {
-                                val insStartCol = if (startSunday) 1 else 0
-                                if (insStartCol > 0) Spacer(Modifier.weight(insStartCol.toFloat()))
-                                Column(Modifier.weight(5f)) {
-                                for (c in interns) {
-                                    val color = th.cardColor(c.name)
-                                    Box(
-                                        Modifier
-                                            .fillMaxWidth()
-                                            .weight(1f)
-                                            .padding(vertical = 3.dp)
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(color.first)
-                                            .clickable { onCourseClick(c) }
-                                    ) {
-                                        Column(Modifier.padding(10.dp)) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Text(
-                                                    "实习", fontSize = 9.sp, color = color.second,
-                                                    modifier = Modifier
-                                                        .background(Color.White.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
-                                                        .padding(horizontal = 5.dp, vertical = 1.dp)
-                                                )
-                                                Spacer(Modifier.width(6.dp))
-                                                Text(
-                                                    "周一至周五 · 第1-8节", fontSize = 9.sp,
-                                                    color = color.second.copy(alpha = 0.75f)
-                                                )
-                                            }
-                                            Spacer(Modifier.height(4.dp))
-                                            Text(
-                                                c.name, fontSize = 14.sp, fontWeight = FontWeight.Bold,
-                                                color = color.second, maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            if (c.teacher.isNotEmpty()) {
-                                                Spacer(Modifier.height(2.dp))
-                                                Text("👨‍🏫 ${c.teacher}", fontSize = 10.sp, color = color.second.copy(alpha = 0.8f))
-                                            }
-                                        }
-                                        Text(
-                                            weekLabel(c.weeks), fontSize = 10.sp,
-                                            color = color.second.copy(alpha = 0.75f),
-                                            modifier = Modifier.align(Alignment.TopEnd).padding(10.dp)
-                                        )
-                                    }
-                                }
-                                }
-                                val insEndCol = 7 - 5 - insStartCol
-                                if (insEndCol > 0) Spacer(Modifier.weight(insEndCol.toFloat()))
-                            }
-                        }
-                        // 实验安排：不加盖大卡片，只在第 11 节下方单独加一行（左列写"实验"，内容跨周一~周五）
-                        if (labs.isNotEmpty()) {
+                        // 实习 / 实验 / 课程设计：统一放在第 11 节下方新开的一行（有就显示，没有就不显示）
+                        // 一周起点为周日时周一在第 2 列 → 整块右移一列，始终与 周一~周五 对齐
+                        val weekBottom = inWeek.filter { it.day == 0 }
+                        if (weekBottom.isNotEmpty()) {
                             Row(
                                 Modifier
                                     .fillMaxWidth()
@@ -1028,31 +971,36 @@ fun TimetableView(
                             ) {
                                 Box(Modifier.width(46.dp), contentAlignment = Alignment.Center) {
                                     Text(
-                                        "实验", fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                                        "安排", fontSize = 9.sp, fontWeight = FontWeight.Bold,
                                         color = th.textSecondary
                                     )
                                 }
-                                for ((i, d) in dayCols.withIndex()) {
-                                    val lab = labs.firstOrNull { it.day == d }
-                                    Box(Modifier.weight(1f).fillMaxHeight().padding(horizontal = 1.dp)) {
-                                        if (lab != null) {
-                                            val color = th.cardColor(lab.name)
+                                Row(Modifier.weight(1f).fillMaxHeight()) {
+                                    val bStart = if (startSunday) 1 else 0
+                                    if (bStart > 0) Spacer(Modifier.weight(bStart.toFloat()))
+                                    Row(
+                                        Modifier.weight(5f).fillMaxHeight(),
+                                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        for (b in weekBottom) {
+                                            val color = th.cardColor(b.name)
                                             Column(
                                                 Modifier
-                                                    .fillMaxSize()
+                                                    .weight(1f)
+                                                    .fillMaxHeight()
                                                     .clip(RoundedCornerShape(10.dp))
                                                     .background(color.first)
-                                                    .clickable { onCourseClick(lab) }
+                                                    .clickable { onCourseClick(b) }
                                                     .padding(horizontal = 5.dp, vertical = 4.dp)
                                             ) {
                                                 Text(
-                                                    lab.name, fontSize = 9.5.sp, lineHeight = 11.sp,
+                                                    b.name, fontSize = 9.5.sp, lineHeight = 11.sp,
                                                     fontWeight = FontWeight.SemiBold, color = color.second,
                                                     maxLines = 2, overflow = TextOverflow.Ellipsis
                                                 )
-                                                if (lab.teacher.isNotEmpty()) {
+                                                if (b.teacher.isNotEmpty()) {
                                                     Text(
-                                                        lab.teacher, fontSize = 8.5.sp, lineHeight = 10.sp,
+                                                        b.teacher, fontSize = 8.5.sp, lineHeight = 10.sp,
                                                         color = color.second.copy(alpha = 0.75f),
                                                         maxLines = 1, overflow = TextOverflow.Ellipsis
                                                     )
@@ -1060,6 +1008,8 @@ fun TimetableView(
                                             }
                                         }
                                     }
+                                    val bEnd = 7 - 5 - bStart
+                                    if (bEnd > 0) Spacer(Modifier.weight(bEnd.toFloat()))
                                 }
                             }
                         }
@@ -1229,6 +1179,71 @@ fun parseWeeksText(text: String): List<Int> {
     return out.toList()
 }
 
+/** 编辑课程里的可视化选时段：7 列(星期) × 11 行(节次)，可点击、可从左上拖到右下框选 */
+@Composable
+fun PeriodPicker(
+    day: Int, startP: Int, endP: Int, th: AppColors,
+    onChange: (day: Int, startP: Int, endP: Int) -> Unit
+) {
+    // 当前选择（矩形）：列=星期(1..7)，行=节次(1..11)
+    var aDay by remember(day, startP, endP) { mutableStateOf(day.coerceIn(1, 7)) }
+    var aP by remember(day, startP, endP) { mutableStateOf(startP.coerceIn(1, 11)) }
+    var bDay by remember(day, startP, endP) { mutableStateOf(day.coerceIn(1, 7)) }
+    var bP by remember(day, startP, endP) { mutableStateOf(endP.coerceIn(1, 11)) }
+
+    fun commit() { onChange(aDay, minOf(aP, bP), maxOf(aP, bP)) }
+
+    val cellW = 30.dp; val cellH = 20.dp
+    Column(Modifier.fillMaxWidth()) {
+        Row {
+            Box(Modifier.width(20.dp)) {}
+            for (d in 1..7) Text(dayNameShort(d), fontSize = 10.sp, color = th.textSecondary,
+                modifier = Modifier.width(cellW), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        }
+        Row {
+            Column { for (p in 1..11) Text("$p", fontSize = 9.sp, color = th.textSecondary,
+                modifier = Modifier.width(20.dp).height(cellH), textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
+            Box(
+                Modifier.weight(1f).height(cellH * 11).clip(RoundedCornerShape(8.dp))
+                    .background(th.divider.copy(alpha = 0.35f))
+                    .pointerInput(Unit) {
+                        val w = size.width / 7f; val h = size.height / 11f
+                        fun cell(x: Float, y: Float): Pair<Int, Int> =
+                            ((x / w).toInt().coerceIn(0, 6) + 1) to ((y / h).toInt().coerceIn(0, 10) + 1)
+                        detectDragGestures(
+                            onDragStart = { o -> val (dd, pp) = cell(o.x, o.y); aDay = dd; aP = pp; bDay = dd; bP = pp },
+                            onDrag = { ch, _ -> val (dd, pp) = cell(ch.position.x, ch.position.y); bDay = dd; bP = pp; ch.consume() },
+                            onDragEnd = { commit() }
+                        )
+                    }
+                    .pointerInput(Unit) {
+                        detectTapGestures { o ->
+                            val w = size.width / 7f; val h = size.height / 11f
+                            val dd = ((o.x / w).toInt().coerceIn(0, 6) + 1)
+                            val pp = ((o.y / h).toInt().coerceIn(0, 10) + 1)
+                            aDay = dd; aP = pp; bDay = dd; bP = pp; commit()
+                        }
+                    }
+            ) {
+                // 选中矩形高亮
+                val c0 = minOf(aDay, bDay); val c1 = maxOf(aDay, bDay)
+                val r0 = minOf(aP, bP); val r1 = maxOf(aP, bP)
+                Box(
+                    Modifier
+                        .offset(x = cellW * (c0 - 1), y = cellH * (r0 - 1))
+                        .width(cellW * (c1 - c0 + 1)).height(cellH * (r1 - r0 + 1))
+                        .background(th.accent.copy(alpha = 0.35f), RoundedCornerShape(4.dp))
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text("点选或拖拽选择 · ${dayName(minOf(aDay, bDay))} 第${minOf(aP, bP)}-${maxOf(aP, bP)}节",
+            fontSize = 11.sp, color = th.textSecondary)
+    }
+}
+
+fun dayNameShort(d: Int) = listOf("", "一", "二", "三", "四", "五", "六", "日")[d.coerceIn(1, 7)]
+
 /** 编辑课程：改节次 / 周次，可选"整个学期"或"仅本周" */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1237,33 +1252,48 @@ fun EditCourseDialog(
     currentWeek: Int,
     th: AppColors,
     onDismiss: () -> Unit,
-    onConfirm: (startP: Int, endP: Int, weeks: List<Int>, onlyThisWeek: Boolean) -> Unit
+    onConfirm: (name: String, teacher: String, location: String, day: Int, startP: Int, endP: Int, weeks: List<Int>, onlyThisWeek: Boolean) -> Unit
 ) {
+    var name by remember { mutableStateOf(course.name) }
+    var teacher by remember { mutableStateOf(course.teacher) }
+    var location by remember { mutableStateOf(course.location) }
+    var day by remember { mutableStateOf(course.day) }
     var startP by remember { mutableStateOf(course.startPeriod) }
     var endP by remember { mutableStateOf(course.endPeriod) }
     var weeksText by remember { mutableStateOf(weeksToText(course.weeks)) }
     var onlyThisWeek by remember { mutableStateOf(false) }
-    val valid = startP in 1..11 && endP in startP..11
+    val valid = name.isNotBlank() && startP in 1..11 && endP in startP..11
 
     MacDialog(color = th.surface, onDismissRequest = onDismiss) { close ->
-        Column {
+        Column(Modifier.verticalScroll(rememberScrollState())) {
             Text("编辑课程", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = th.textPrimary)
-            Text(course.name, fontSize = 12.sp, color = th.textSecondary)
-            Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("第", fontSize = 13.sp, color = th.textSecondary)
-                OutlinedTextField(
-                    startP.toString(),
-                    { s -> s.filter { it.isDigit() }.take(2).toIntOrNull()?.let { if (it in 1..11) startP = it } },
-                    singleLine = true, modifier = Modifier.width(58.dp).padding(horizontal = 4.dp)
-                )
-                Text("节 到", fontSize = 13.sp, color = th.textSecondary)
-                OutlinedTextField(
-                    endP.toString(),
-                    { s -> s.filter { it.isDigit() }.take(2).toIntOrNull()?.let { if (it in 1..11) endP = it } },
-                    singleLine = true, modifier = Modifier.width(58.dp).padding(horizontal = 4.dp)
-                )
-                Text("节", fontSize = 13.sp, color = th.textSecondary)
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(name, { name = it },
+                label = { Text("课程名") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedTextField(teacher, { teacher = it },
+                    label = { Text("老师") }, singleLine = true, modifier = Modifier.weight(1f))
+                OutlinedTextField(location, { location = it },
+                    label = { Text("教室") }, singleLine = true, modifier = Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(10.dp))
+            if (course.day != 0) {
+                Text("上课时间（点选或拖拽框选）", fontSize = 12.sp, color = th.textSecondary)
+                Spacer(Modifier.height(4.dp))
+                PeriodPicker(day, startP, endP, th) { d, s, e -> day = d; startP = s; endP = e }
+            } else {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("第", fontSize = 13.sp, color = th.textSecondary)
+                    OutlinedTextField(startP.toString(),
+                        { s -> s.filter { it.isDigit() }.take(2).toIntOrNull()?.let { if (it in 1..11) startP = it } },
+                        singleLine = true, modifier = Modifier.width(58.dp).padding(horizontal = 4.dp))
+                    Text("节 到", fontSize = 13.sp, color = th.textSecondary)
+                    OutlinedTextField(endP.toString(),
+                        { s -> s.filter { it.isDigit() }.take(2).toIntOrNull()?.let { if (it in 1..11) endP = it } },
+                        singleLine = true, modifier = Modifier.width(58.dp).padding(horizontal = 4.dp))
+                    Text("节", fontSize = 13.sp, color = th.textSecondary)
+                }
             }
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1288,7 +1318,7 @@ fun EditCourseDialog(
                 Spacer(Modifier.width(4.dp))
                 Button(enabled = valid, onClick = {
                     onConfirm(
-                        startP, endP,
+                        name, teacher, location, day, startP, endP,
                         if (onlyThisWeek) listOf(currentWeek) else parseWeeksText(weeksText),
                         onlyThisWeek
                     )

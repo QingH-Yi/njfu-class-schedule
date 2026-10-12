@@ -1,6 +1,7 @@
 package com.njfu.schedule
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
@@ -128,6 +129,19 @@ class ImportActivity : ComponentActivity() {
         })
     }
 
+    /** 课表入库（keepEdited=是否保留手动修改），随后抓三轮学分 */
+    private fun applyAndFetchCredits(res: ParseResult, keepEdited: Boolean) {
+        Repository.replaceCourses(res.courses, res.term, keepEdited = keepEdited)
+        grabbingCredits = true
+        status.text = "课表校验一致：已导入 $lastAdded 门，正在爬学分（第1/3轮）…"
+        val js = loadKbJs(res.term.ifEmpty { Repository.loadSchedule().term })
+        for (d in longArrayOf(500, 3000, 5500)) {
+            webView.postDelayed({
+                try { webView.evaluateJavascript(js, null) } catch (_: Exception) {}
+            }, d)
+        }
+    }
+
     private fun jsStr(s: String) = s
         .replace("\\", "\\\\").replace("'", "\\'")
         .replace("\n", "\\n").replace("\r", "")
@@ -227,17 +241,23 @@ class ImportActivity : ComponentActivity() {
                         webView.postDelayed({ finish() }, 1800)
                     }
                     else -> {
-                        // 每次抓取都是覆盖保存（备忘/学分按 名称|星期|起始节 自动保留）
+                        // 三轮一致：若用户手动改过课表，先问是否保留
                         lastAdded = tableResults[0].courses.size
-                        Repository.replaceCourses(tableResults[0].courses, tableResults[0].term)
-                        // 课表三轮一致已入库，接着抓三轮学分
-                        grabbingCredits = true
-                        status.text = "课表校验一致：已覆盖导入 $lastAdded 门，正在爬学分（第1/3轮）…"
-                        val js = loadKbJs(tableResults[0].term.ifEmpty { Repository.loadSchedule().term })
-                        for (d in longArrayOf(500, 3000, 5500)) {
-                            webView.postDelayed({
-                                try { webView.evaluateJavascript(js, null) } catch (_: Exception) {}
-                            }, d)
+                        val res = tableResults[0]
+                        if (Repository.editedCourses().isNotEmpty()) {
+                            try {
+                                AlertDialog.Builder(this@ImportActivity)
+                                    .setTitle("保留手动修改？")
+                                    .setMessage("你手动修改过课表。本次导入要保留这些修改吗？")
+                                    .setCancelable(false)
+                                    .setPositiveButton("保留修改") { _, _ -> applyAndFetchCredits(res, true) }
+                                    .setNegativeButton("用教务的") { _, _ -> applyAndFetchCredits(res, false) }
+                                    .show()
+                            } catch (e: Exception) {
+                                applyAndFetchCredits(res, false)
+                            }
+                        } else {
+                            applyAndFetchCredits(res, false)
                         }
                     }
                 }

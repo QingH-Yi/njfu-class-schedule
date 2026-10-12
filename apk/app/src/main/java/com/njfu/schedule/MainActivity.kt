@@ -859,8 +859,11 @@ fun TimetableView(
                 val othersByDay = otherWeek.groupBy { it.day }
                 val dates = weekDates(schedule.termStartMonday, week)
                 Column(Modifier.fillMaxSize().verticalScroll(vs)) {
-                    Box(Modifier.fillMaxWidth()) {
-                        Row(Modifier.fillMaxWidth()) {
+                    // 用 Column（不是 Box）纵向排列：11 节网格在上，"安排"行紧跟其下。
+                    // 曾经用 Box 是为了把"整周实习"大卡片盖在网格上，那个叠加已移除；
+                    // 若仍是 Box，子项默认贴顶堆叠，"安排"行会压到课表顶部（用户报的 bug）。
+                    Column(Modifier.fillMaxWidth()) {
+                        Row(Modifier.fillMaxWidth().testTag("gridBody")) {
                             for ((i, d) in dayCols.withIndex()) {
                                 Column(
                                     Modifier
@@ -973,7 +976,8 @@ fun TimetableView(
                                 Modifier
                                     .fillMaxWidth()
                                     .height(slotH * 0.78f)
-                                    .padding(vertical = 3.dp),
+                                    .padding(vertical = 3.dp)
+                                    .testTag("bottomRow"),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Row(

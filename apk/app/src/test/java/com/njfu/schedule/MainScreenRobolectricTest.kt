@@ -121,6 +121,31 @@ class MainScreenRobolectricTest {
     }
 
     @Test
+    @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
+    fun bottomArrangementRowSitsBelowGrid() {
+        seed()
+        rule.setContent { ScheduleApp(mutableStateOf(0)) }
+        rule.waitForIdle()
+        // 课表 pager 同时组合相邻 3 页 → gridBody / bottomRow 各有 3 个；
+        // 未显示的相邻页 bounds 是全 0（宽高为 0），必须过滤掉，否则会误取到它、
+        // 断言 `0 >= -2` 恒真而"假通过"。只保留有实际尺寸的节点，再取最靠左的那个。
+        // 用高屏（h1600dp）：11 节网格就有 638dp，矮屏上"安排"行在视口外会被裁成 0 尺寸。
+        fun visible(tag: String) = rule.onAllNodesWithTag(tag).fetchSemanticsNodes()
+            .filter { it.boundsInRoot.width > 0f && it.boundsInRoot.height > 0f }
+            .minByOrNull { it.boundsInRoot.left }
+        val g = visible("gridBody")
+        val r = visible("bottomRow")
+        assertTrue("应有可见的课表网格", g != null)
+        assertTrue("应有可见的底部'安排'行（含整周实习）", r != null)
+        // "安排"行必须整体落在 11 节网格的下方。
+        // 曾经它是 Box 的第二个子项，Box 默认把子项堆在左上 → 被压到课表顶部（用户报的 bug）。
+        assertTrue(
+            "安排行 top=${r!!.boundsInRoot.top} 应 >= 网格 bottom=${g!!.boundsInRoot.bottom}",
+            r.boundsInRoot.top >= g.boundsInRoot.bottom - 2f
+        )
+    }
+
+    @Test
     fun blankCellSelectsOnTapAndAddsOnDoubleTap() {
         seed()
         rule.setContent { ScheduleApp(mutableStateOf(0)) }

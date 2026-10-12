@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>南林课程表 · 南京林业大学课表 App</title>
+<meta name="description" content="南京林业大学课程表 App：打开自动从教务系统同步课表，支持三校区作息、教学周、教室与老师。安卓版免费下载。">
+<meta property="og:title" content="南林课程表">
+<meta property="og:description" content="打开 App，自动从教务系统同步课表。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=ZCOOL+KuaiLe&display=swap" rel="stylesheet">
+<style>
+  :root{
+    color-scheme: light;
+    --paper:#FDF8F1;
+    --cream:#FFF7EE;
+    --ink:#6B584C;
+    --ink-2:#A08D7C;
+    --line:#EFE3D5;
+    --amber:#F4B740;
+    --amber-ink:#4A3A22;
+    --pink:#FFD6E0; --pink-d:#B44D62;
+    --matcha:#DDE8C2; --matcha-d:#71812F;
+    --custard:#FFEBB8; --custard-d:#A87E1D;
+    --taro:#E4D7F9; --taro-d:#7B5EA7;
+    --sea:#CDE6F8; --sea-d:#4A7FB5;
+    --peach:#FFDCC8; --peach-d:#C4693B;
+    --mint:#C9EBDD; --mint-d:#2E8B6E;
+    --radius:22px;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0;
+    background:var(--paper);
+    color:var(--ink);
+    font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,-apple-system,"Segoe UI",sans-serif;
+    line-height:1.7;
+    font-size:16px;
+  }
+  .wrap{max-width:960px;margin:0 auto;padding:0 22px}
+  .display{font-family:"ZCOOL KuaiLe","PingFang SC","Microsoft YaHei",system-ui,sans-serif;font-weight:400}
+
+  /* 顶部细条，像纸胶带 */
+  .tape{
+    height:6px;
+    background:linear-gradient(90deg,var(--pink),var(--custard),var(--mint),var(--sea),var(--taro));
+  }
+
+  header.hero{padding:64px 0 40px}
+  .hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:44px;align-items:center}
+  .chick{font-size:30px;line-height:1;vertical-align:-2px;margin-right:8px}
+  h1{
+    font-size:clamp(44px,8vw,72px);
+    margin:0;
+    letter-spacing:.5px;
+    color:var(--ink);
+  }
+  .pitch{
+    font-size:clamp(17px,2.4vw,20px);
+    color:var(--ink-2);
+    margin:14px 0 0;
+    max-width:34ch;
+  }
+  .cta{margin-top:30px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+  .btn{
+    display:inline-flex;align-items:center;gap:9px;
+    text-decoration:none;font-size:16px;font-weight:600;
+    padding:13px 24px;border-radius:999px;
+    transition:transform .12s ease, box-shadow .12s ease, background .12s ease;
+  }
+  .btn:active{transform:translateY(1px)}
+  .btn-primary{
+    background:var(--amber);color:var(--amber-ink);
+    box-shadow:0 6px 0 #d99a2a;
+  }
+  .btn-primary:hover{background:#f8c257}
+  .btn-primary:active{box-shadow:0 3px 0 #d99a2a}
+  .btn-ghost{
+    background:transparent;color:var(--ink);
+    border:2px solid var(--line);
+  }
+  .btn-ghost:hover{border-color:#e0cfb9;background:#fffaf3}
+  .free{margin-top:16px;font-size:13.5px;color:var(--ink-2)}
+
+  /* 主视觉：用纯 CSS 摆一张马卡龙小课表 */
+  .board{
+    background:var(--cream);
+    border:2px solid var(--line);
+    border-radius:28px;
+    padding:18px;
+    box-shadow:0 18px 40px -24px rgba(107,88,76,.55);
+    transform:rotate(-1.4deg);
+  }
+  .board-days{display:grid;grid-template-columns:22px repeat(5,1fr);gap:6px;margin-bottom:8px}
+  .board-days span{font-size:11px;color:var(--ink-2);text-align:center}
+  .board-days span.lead{visibility:hidden}
+  .board-body{display:grid;grid-template-columns:22px repeat(5,1fr);gap:6px;grid-auto-rows:46px}
+  .slot{font-size:9px;color:var(--ink-2);display:flex;align-items:center;justify-content:center}
+  .cell{border-radius:9px}
+  .c-name{
+    border-radius:9px;padding:4px 6px;font-size:9.5px;line-height:1.3;font-weight:600;
+    overflow:hidden;
+  }
+  .c-name em{display:block;font-style:normal;font-size:8.5px;font-weight:500;opacity:.72;margin-top:1px}
+  .c-name.pink{background:var(--pink);color:var(--pink-d)}
+  .c-name.matcha{background:var(--matcha);color:var(--matcha-d)}
+  .c-name.custard{background:var(--custard);color:var(--custard-d)}
+  .c-name.taro{background:var(--taro);color:var(--taro-d)}
+  .c-name.sea{background:var(--sea);color:var(--sea-d)}
+  .c-name.peach{background:var(--peach);color:var(--peach-d)}
+  .c-name.mint{background:var(--mint);color:var(--mint-d)}
+
+  main{padding-bottom:24px}
+  .band{background:var(--cream);border-top:2px solid var(--line);border-bottom:2px solid var(--line);padding:56px 0}
+  h2{font-size:clamp(26px,4vw,34px);margin:0 0 8px}
+  .sub{color:var(--ink-2);margin:0 0 34px;max-width:52ch}
+
+  .features{display:grid;grid-template-columns:1fr 1fr;gap:22px 40px}
+  .feat{display:flex;gap:14px;align-items:flex-start}
+  .dot{flex:0 0 14px;width:14px;height:14px;border-radius:5px;margin-top:9px}
+  .feat h3{margin:0 0 2px;font-size:16.5px}
+  .feat p{margin:0;color:var(--ink-2);font-size:14.5px;line-height:1.6}
+
+  .privacy{padding:44px 0 8px;text-align:center}
+  .privacy .badge{
+    display:inline-block;font-size:13.5px;color:var(--ink);
+    background:var(--mint);border-radius:999px;padding:8px 18px;
+  }
+
+  footer{border-top:2px solid var(--line);padding:34px 0 60px;margin-top:40px}
+  .foot-grid{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center}
+  .who{font-size:15px}
+  .who strong{font-weight:700}
+  .links{display:flex;gap:22px;flex-wrap:wrap}
+  .links a{color:var(--ink);text-decoration:none;border-bottom:1.5px solid #e3d3bf;padding-bottom:1px}
+  .links a:hover{border-color:var(--ink)}
+  .copyright{margin-top:22px;font-size:12.5px;color:var(--ink-2)}
+
+  a:focus-visible, .btn:focus-visible{outline:3px solid var(--sea-d);outline-offset:2px;border-radius:8px}
+
+  @media (max-width:720px){
+    header.hero{padding:40px 0 24px}
+    .hero-grid{grid-template-columns:1fr;gap:34px}
+    .board{transform:rotate(-1deg)}
+    .features{grid-template-columns:1fr}
+  }
+  @media (prefers-reduced-motion: reduce){
+    .btn{transition:none}
+  }
+</style>
+</head>
+<body>
+<div class="tape"></div>
+
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <h1 class="display"><span class="chick">🐤</span>南林课程表</h1>
+      <p class="pitch">打开 App，自动登录教务系统，把最新课表同步到手机。三校区作息、教学周、教室老师，都在手边。</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="https://github.com/wangbq666/njfu-class-schedule/releases/latest">
+          ⬇ 下载安卓版
+        </a>
+        <a class="btn btn-ghost" href="https://github.com/wangbq666/njfu-class-schedule">查看源码</a>
+      </div>
+      <p class="free">免费 · 约 1.6&nbsp;MB · 需要 Android 8.0 以上</p>
+    </div>
+
+    <div class="board" aria-hidden="true">
+      <div class="board-days">
+        <span class="lead"></span><span>周一</span><span>周二</span><span>周三</span><span>周四</span><span>周五</span>
+      </div>
+      <div class="board-body">
+        <div class="slot">1</div><div class="c-name custard">电气控制与PLC<em>教五楼50320</em></div><div class="c-name pink">电力系统暂态<em>50218</em></div><div class="cell"></div><div class="cell"></div><div class="c-name sea">信号与系统<em>50308</em></div>
+        <div class="slot">2</div><div class="cell"></div><div class="c-name taro">电力电子技术<em>50112</em></div><div class="c-name mint">高等数学<em>A203</em></div><div class="cell"></div><div class="cell"></div>
+        <div class="slot">3</div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="c-name matcha">体育(5)<em>操场</em></div><div class="cell"></div>
+        <div class="slot">4</div><div class="c-name sea">工程经济管理<em>在线教学</em></div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell"></div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section class="band">
+    <div class="wrap">
+      <h2 class="display">课表该有的样子</h2>
+      <p class="sub">给南林学生做的课表 App，不是通用的日程表。它认识你的教务系统。</p>
+      <div class="features">
+        <div class="feat">
+          <span class="dot" style="background:var(--custard)"></span>
+          <div><h3>打开就自动更新</h3><p>保存一次账号密码，之后每次打开 App 自动登录教务、把最新课表同步下来；失败也不影响已存的课表。</p></div>
+        </div>
+        <div class="feat">
+          <span class="dot" style="background:var(--pink)"></span>
+          <div><h3>三校区作息</h3><p>新庄（本部）、淮安、白马，上课时间各不同。切换校区，节次时间自动对上。</p></div>
+        </div>
+        <div class="feat">
+          <span class="dot" style="background:var(--sea)"></span>
+          <div><h3>教室直接写在格子上</h3><p>不用点开也能看到在哪上课；点开详情有完整的老师、周次和学分。</p></div>
+        </div>
+        <div class="feat">
+          <span class="dot" style="background:var(--taro)"></span>
+          <div><h3>课可以自己记</h3><p>双击课程写备忘录（格子右上角会出现 📝），作业、考试、要带的东西随手记。</p></div>
+        </div>
+        <div class="feat">
+          <span class="dot" style="background:var(--mint)"></span>
+          <div><h3>空白格能加课</h3><p>点一下空白格，手动加一门课：每周 / 单周 / 双周 / 仅本周都行。</p></div>
+        </div>
+        <div class="feat">
+          <span class="dot" style="background:var(--peach)"></span>
+          <div><h3>顺手的样子</h3><p>左右滑换周，顶部日期条跟着走；4 套色系、深色模式、反色，怎么顺眼怎么来。</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="privacy">
+    <div class="wrap">
+      <span class="badge">🔒 账号密码只保存在你本机，不上传任何服务器</span>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="who">作者：<strong>wangbq666</strong></div>
+      <nav class="links">
+        <a href="https://github.com/wangbq666">GitHub 主页</a>
+        <a href="https://github.com/wangbq666/njfu-class-schedule">项目仓库</a>
+        <a href="https://github.com/wangbq666/njfu-class-schedule/releases/latest">下载最新版</a>
+      </nav>
+    </div>
+    <p class="copyright">南林课程表 · 学生个人作品，与南京林业大学官方无关。</p>
+  </div>
+</footer>
+</body>
+</html>

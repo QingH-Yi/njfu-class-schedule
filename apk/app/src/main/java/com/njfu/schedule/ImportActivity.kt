@@ -142,10 +142,6 @@ class ImportActivity : ComponentActivity() {
         }
     }
 
-    private fun jsStr(s: String) = s
-        .replace("\\", "\\\\").replace("'", "\\'")
-        .replace("\n", "\\n").replace("\r", "")
-
     private fun tryAutoLogin() {
         val u = Repository.user
         val p = Repository.pass
@@ -186,14 +182,6 @@ class ImportActivity : ComponentActivity() {
         webView.postDelayed({ finishImport(0) }, 30000)
     }
 
-    /** 课表规范化签名：三轮签名一致才算没抓错 */
-    private fun tableSignature(r: ParseResult): String = buildString {
-        append(r.term)
-        r.courses.sortedWith(compareBy({ it.day }, { it.startPeriod }, { it.name })).forEach {
-            append("|${it.name}#${it.day}#${it.startPeriod}#${it.endPeriod}#${it.teacher}#${it.location}#${it.weeks.joinToString(",")}")
-        }
-    }
-
     /** 学分导入收尾（三轮齐了或超时兜底） */
     private fun finishImport(creditsApplied: Int) {
         if (importFinished || isFinishing) return
@@ -219,9 +207,15 @@ class ImportActivity : ComponentActivity() {
     inner class GrabInterface {
         @JavascriptInterface
         fun receive(html: String) {
+            // receive 跑在 WebView 的 JavaBridge 后台线程（串行），在这里解析避免主线程卡顿/ANR；
+            // 解析完再回主线程更新界面。教务整页 HTML 有几百 KB～MB，主线程解析会有明显卡顿。
+            val result = try {
+                JwxtParser.parseHtml(html)
+            } catch (e: Exception) {
+                null
+            }
             runOnUiThread {
                 if (importFinished) return@runOnUiThread
-                val result = JwxtParser.parseHtml(html)
                 if (result == null || result.courses.isEmpty()) {
                     status.text = "没解析到课表。请先进「学期理论课表」选好学期，再抓取。"
                     Toast.makeText(this@ImportActivity, "未识别到课表", Toast.LENGTH_SHORT).show()

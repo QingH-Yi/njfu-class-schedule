@@ -1,11 +1,9 @@
 package com.njfu.schedule
 
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -23,6 +21,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -154,6 +153,8 @@ fun currentAppColors(context: android.content.Context): AppColors {
 
 /**
  * 带缩放+淡入淡出动画的弹窗：圆角大卡片风格。
+ * 进入用 spring（轻微回弹，收尾自然），退出用 tween 快速收走；
+ * 纵向比横向略微"拉伸"一点（scaleY 略大于 scaleX），像被轻轻撑开，比等比缩放更有手感。
  * content 里的按钮调用 close() 触发退出动画后再真正关闭。
  */
 @Composable
@@ -167,29 +168,40 @@ fun MacDialog(
     LaunchedEffect(Unit) { visible = true }
     if (exiting) {
         LaunchedEffect(Unit) {
-            delay(180)
+            delay(200)
             onDismissRequest()
         }
     }
     val close = { if (!exiting) { exiting = true; visible = false } }
+
+    // 0=收起 1=展开；进入走 spring（带回弹），退出走 tween
+    val progress by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = if (visible)
+            spring(dampingRatio = 0.72f, stiffness = Spring.StiffnessMediumLow)
+        else
+            tween(durationMillis = 150),
+        label = "dialogProgress"
+    )
+
     Dialog(
         onDismissRequest = { close() },
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Box(Modifier.fillMaxWidth().padding(horizontal = 22.dp), contentAlignment = Alignment.Center) {
-            AnimatedVisibility(
-                visible = visible,
-                enter = scaleIn(initialScale = 0.88f, animationSpec = tween(190)) + fadeIn(tween(150)),
-                exit = scaleOut(targetScale = 0.92f, animationSpec = tween(150)) + fadeOut(tween(140))
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = color,
+                shadowElevation = 8.dp,
+                modifier = Modifier.graphicsLayer {
+                    // 进入时纵向先"撑开"再回落（scaleY 略大于 scaleX），退出时同步收拢
+                    scaleX = 0.90f + 0.10f * progress
+                    scaleY = 0.86f + 0.14f * progress
+                    alpha = progress
+                }
             ) {
-                Surface(
-                    shape = RoundedCornerShape(24.dp),
-                    color = color,
-                    shadowElevation = 8.dp
-                ) {
-                    Column(Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
-                        content(close)
-                    }
+                Column(Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
+                    content(close)
                 }
             }
         }

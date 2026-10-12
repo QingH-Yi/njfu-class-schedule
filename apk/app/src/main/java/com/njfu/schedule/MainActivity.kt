@@ -17,6 +17,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -101,11 +103,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** jsStr: 把字符串安全地嵌入页面 JS 的单引号字面量 */
-    private fun jsStr(s: String) = s
-        .replace("\\", "\\\\").replace("'", "\\'")
-        .replace("\n", "\\n").replace("\r", "")
-
     /**
      * 后台无界面 WebView 抓取更新：加载教务主页（含课表预览），
      * 若会话有效则直接抓；会话过期则尝试用保存的账号自动登录后再抓。
@@ -178,9 +175,16 @@ class MainActivity : ComponentActivity() {
         val wv = bgWebView ?: return
         bgWebView = null
         try {
+            wv.stopLoading()
             (wv.parent as? FrameLayout)?.let { it.removeAllViews() }
             wv.destroy()
         } catch (_: Exception) {}
+    }
+
+    /** Activity 销毁时释放后台抓取用的 WebView，避免它和 25s 兜底定时器一起泄漏 */
+    override fun onDestroy() {
+        destroyBgWebView()
+        super.onDestroy()
     }
 
     inner class BgGrab {
@@ -245,14 +249,6 @@ class MainActivity : ComponentActivity() {
         /** 三轮学分抓取只启动一次（GRAB_JS 会多次回传课表） */
         fun markRoundsStarted(): Boolean = synchronized(this) {
             if (roundsStarted) false else { roundsStarted = true; true }
-        }
-    }
-
-    /** 课表规范化签名：三轮签名一致才算没抓错 */
-    private fun tableSignature(r: ParseResult): String = buildString {
-        append(r.term)
-        r.courses.sortedWith(compareBy({ it.day }, { it.startPeriod }, { it.name })).forEach {
-            append("|${it.name}#${it.day}#${it.startPeriod}#${it.endPeriod}#${it.teacher}#${it.location}#${it.weeks.joinToString(",")}")
         }
     }
 
@@ -466,30 +462,43 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                             }
                         }
                     }
-                } else if (gridView) {
-                    TimetableView(
-                        schedule, currentWeek, th,
-                        onCourseClick = { detail = it },
-                        onAddCourse = { d, p, w -> addReq = Triple(d, p, w) }
-                    )
                 } else {
-                    val byDay = schedule.courses.groupBy { it.day }
-                    LazyColumn(
-                        Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(12.dp)
-                    ) {
-                        for (day in 1..7) {
-                            val list = byDay[day] ?: continue
-                            item(key = "h$day") {
-                                Text(
-                                    dayName(day),
-                                    fontWeight = FontWeight.Bold, fontSize = 16.sp,
-                                    color = th.accent,
-                                    modifier = Modifier.padding(vertical = 6.dp)
-                                )
+                    // 课表 ↔ 列表 切换用淡入淡出 + 轻微缩放过渡，比硬切自然
+                    Crossfade(
+                        targetState = gridView,
+                        animationSpec = tween(durationMillis = 240),
+                        label = "viewSwitch"
+                    ) { isGrid ->
+                        if (isGrid) {
+                            TimetableView(
+                                schedule, currentWeek, th,
+                                onCourseClick = { detail = it },
+                                onAddCourse = { d, p, w -> addReq = Triple(d, p, w) }
+                            )
+                        } else {
+                            // 分组+排序只在课表变化时算一次（原来在 LazyColumn 的 content lambda 里，每次重组重算）
+                            val byDay = remember(schedule.courses) {
+                                schedule.courses.groupBy { it.day }
+                                    .mapValues { (_, l) -> l.sortedBy { it.startPeriod } }
                             }
-                            items(list.sortedBy { it.startPeriod }, key = { it.id }) { c ->
-                                CourseCard(c, schedule.campus, th)
+                            LazyColumn(
+                                Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(12.dp)
+                            ) {
+                                for (day in 1..7) {
+                                    val list = byDay[day] ?: continue
+                                    item(key = "h$day") {
+                                        Text(
+                                            dayName(day),
+                                            fontWeight = FontWeight.Bold, fontSize = 16.sp,
+                                            color = th.accent,
+                                            modifier = Modifier.padding(vertical = 6.dp)
+                                        )
+                                    }
+                                    items(list, key = { it.id }) { c ->
+                                        CourseCard(c, schedule.campus, th)
+                                    }
+                                }
                             }
                         }
                     }
@@ -698,10 +707,10 @@ fun TimetableView(
     // 翻周时清除选中高亮
     LaunchedEffect(pagerState.currentPage) { selectedKey = null }
     // 一周起点可设为周日：列顺序变化，日期按 周日=该周最后一天 重排
-    // 外观设置只读一次，避免在每页/每次重绘里反复读 SharedPreferences
-    val showOtherWeek = Repository.showOtherWeekCourses
-    val startSunday = Repository.weekStartSunday
-    val dayCols = if (startSunday) listOf(7, 1, 2, 3, 4, 5, 6) else (1..7).toList()
+    // 外观设置只读一次，避免在每页/每次重绘里反复读 SharedPreferences（外观变更由 refreshState 整树重建）
+    val showOtherWeek = remember { Repository.showOtherWeekCourses }
+    val startSunday = remember { Repository.weekStartSunday }
+    val dayCols = remember(startSunday) { if (startSunday) listOf(7, 1, 2, 3, 4, 5, 6) else (1..7).toList() }
     val dateIdx: (Int) -> Int = if (startSunday)
         { i -> if (i == 0) 6 else i - 1 } else { i -> i }
     // 日期条对齐点：该周第一天在日期条上的 index（周日起点=该周周日，周一起点=该周周一）
@@ -718,7 +727,7 @@ fun TimetableView(
         val dayIndexBase = weekStartIndex(1)
         val stripStart = remember(schedule.termStartMonday) {
             try {
-                LocalDate.parse(schedule.termStartMonday, DateTimeFormatter.ofPattern("yyyy-MM-dd")).minusDays(7)
+                LocalDate.parse(schedule.termStartMonday, DATE_FMT).minusDays(7)
             } catch (e: Exception) {
                 null
             }
@@ -834,7 +843,10 @@ fun TimetableView(
                 }
                 // 左列最下方（第 12 格）：与右侧"安排"行对齐的标签。
                 // 只在"当前查看的这一周确实有整周安排"时才显示（与右侧一致，没有就不占位）
-                if (schedule.courses.any { it.day == 0 && (it.weeks.isEmpty() || viewedWeek in it.weeks) }) {
+                val hasBottom = remember(schedule.courses, viewedWeek) {
+                    schedule.courses.any { it.day == 0 && (it.weeks.isEmpty() || viewedWeek in it.weeks) }
+                }
+                if (hasBottom) {
                     Box(Modifier.height(slotH * 0.78f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                         Text("安排", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = th.textSecondary)
                     }
@@ -856,9 +868,9 @@ fun TimetableView(
                         .filter { it.weeks.isNotEmpty() && week !in it.weeks && it.day != 0 }
                     else emptyList()
                 }
-                val byDay = inWeek.groupBy { it.day }
-                val othersByDay = otherWeek.groupBy { it.day }
-                val dates = weekDates(schedule.termStartMonday, week)
+                val byDay = remember(inWeek) { inWeek.groupBy { it.day } }
+                val othersByDay = remember(otherWeek) { otherWeek.groupBy { it.day } }
+                val dates = remember(schedule.termStartMonday, week) { weekDates(schedule.termStartMonday, week) }
                 Column(Modifier.fillMaxSize().verticalScroll(vs)) {
                     // 用 Column（不是 Box）纵向排列：11 节网格在上，"安排"行紧跟其下。
                     // 曾经用 Box 是为了把"整周实习"大卡片盖在网格上，那个叠加已移除；
@@ -972,8 +984,8 @@ fun TimetableView(
                         // 最底部一行：整周安排（实习/实验/课程设计）。
                         // 只显示"当前查看的这一周"确实要上的（周次命中），没有就整行不显示；
                         // 内容横跨【周一~周五】这 5 列，与上面网格的列严格对齐（切换周一/周日起点也跟着移）
-                        val weekBottom = schedule.courses.filter {
-                            it.day == 0 && (it.weeks.isEmpty() || week in it.weeks)
+                        val weekBottom = remember(schedule.courses, week) {
+                            schedule.courses.filter { it.day == 0 && (it.weeks.isEmpty() || week in it.weeks) }
                         }
                         if (weekBottom.isNotEmpty()) {
                             // 周日为起点时：周日占第 1 列 → 周一到周五整体右移 1 列，周六收尾
@@ -1132,19 +1144,6 @@ fun AddCourseDialog(
     }
 }
 
-/** 把周次列表压成 "1-16,18" 这样的文本（编辑框用） */
-fun weeksToText(weeks: List<Int>): String {
-    if (weeks.isEmpty()) return ""
-    val w = weeks.sorted()
-    val ranges = mutableListOf<Pair<Int, Int>>()
-    var s = w[0]; var prev = w[0]
-    for (i in 1 until w.size) {
-        if (w[i] == prev + 1) prev = w[i] else { ranges.add(s to prev); s = w[i]; prev = w[i] }
-    }
-    ranges.add(s to prev)
-    return ranges.joinToString(",") { (a, b) -> if (a == b) "$a" else "$a-$b" }
-}
-
 /** 解析 "1-16,18" 这样的周次文本 → [1..16,18] */
 fun parseWeeksText(text: String): List<Int> {
     val out = sortedSetOf<Int>()
@@ -1223,8 +1222,6 @@ fun PeriodPicker(selected: Set<Pair<Int, Int>>, th: AppColors, onChange: (Set<Pa
     }
 }
 
-fun dayNameShort(d: Int) = listOf("", "一", "二", "三", "四", "五", "六", "日")[d.coerceIn(1, 7)]
-
 /** 把选中的格子按星期归并成若干时段 (day, start, end) */
 fun slotsToRuns(slots: Set<Pair<Int, Int>>): List<Triple<Int, Int, Int>> =
     slots.groupBy { it.first }.toSortedMap().map { (d, list) ->
@@ -1269,12 +1266,18 @@ fun EditCourseDialog(
                     label = { Text("教室") }, singleLine = true, modifier = Modifier.weight(1f))
             }
             Spacer(Modifier.height(10.dp))
-            if (course.day != 0) {
-                Text("上课时间（点选 / 拖拽，可多选组合）", fontSize = 12.sp, color = th.textSecondary)
+            // 整周安排（实习/实验/课程设计）也能设具体时间：留空=保持整周（第 12 行横跨周一~周五）；
+            // 选了具体时段就变成普通课、移到上面的网格里（Repository.editCourse 已按此处理）
+            Text(
+                if (course.day != 0) "上课时间（点选 / 拖拽，可多选组合）"
+                else "上课时间（整周安排可留空；选了具体时段就变成普通课）",
+                fontSize = 12.sp, color = th.textSecondary
+            )
+            Spacer(Modifier.height(4.dp))
+            PeriodPicker(slots, th) { slots = it }
+            if (course.day == 0 && slots.isEmpty()) {
                 Spacer(Modifier.height(4.dp))
-                PeriodPicker(slots, th) { slots = it }
-            } else {
-                Text("整周安排（实习 / 实验 / 课程设计）", fontSize = 12.sp, color = th.textSecondary)
+                Text("当前：整周安排（不占具体时段）", fontSize = 11.sp, color = th.textSecondary)
             }
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { wholeTerm = !wholeTerm }) {
@@ -1310,14 +1313,6 @@ fun EditCourseDialog(
     }
 }
 
-/** 某日期属于第几教学周（按周一为周首），夹在 1..maxWeek */
-fun weekOfDate(termStartMonday: String, date: LocalDate, maxWeek: Int): Int = try {
-    val s = LocalDate.parse(termStartMonday, DateTimeFormatter.ofPattern("yyyy-MM-dd"))
-    ((ChronoUnit.DAYS.between(s, date)) / 7 + 1).toInt().coerceIn(1, maxWeek)
-} catch (e: Exception) {
-    1
-}
-
 /**
  * 日期条"天序号"(可含小数) → 课表 pager 的 (page, pageOffsetFraction)。
  * page 夹在 0..maxPage、frac 夹在 ±0.5 内，保证 PagerState.scrollToPage 不会因越界/非法偏移而抛异常。
@@ -1329,11 +1324,12 @@ fun pagerPosFromDay(d: Float, dayIndexBase: Int, maxPage: Int): Pair<Int, Float>
     return page to frac
 }
 
-private val DAY_SHORT = listOf("一", "二", "三", "四", "五", "六", "日")
+/** 学期起始日等日期统一用这个格式（顶层常量，避免每次解析都重新编译 formatter） */
+private val DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 
 /** 某教学周 7 天的日期（周一~周日），解析失败返回 null 列表 */
 fun weekDates(startMonday: String, week: Int): List<LocalDate?> = try {
-    val s = LocalDate.parse(startMonday, DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+    val s = LocalDate.parse(startMonday, DATE_FMT)
     val monday = s.plusDays(((week - 1) * 7).toLong())
     (0..6).map { monday.plusDays(it.toLong()) }
 } catch (e: Exception) {
@@ -1779,34 +1775,12 @@ guid(function(g){
 })();"""
 }
 
-fun dayName(d: Int) =
-    listOf("", "周一", "周二", "周三", "周四", "周五", "周六", "周日")[d.coerceIn(1, 7)]
-
-/** 把周次列表压缩成 "1-3,9-10周" 这样的标签 */
-fun weekLabel(weeks: List<Int>): String {
-    if (weeks.isEmpty()) return "全学期"
-    val w = weeks.sorted()
-    val ranges = mutableListOf<Pair<Int, Int>>()
-    var s = w[0]
-    var prev = w[0]
-    for (i in 1 until w.size) {
-        if (w[i] == prev + 1) {
-            prev = w[i]
-        } else {
-            ranges.add(s to prev)
-            s = w[i]
-            prev = w[i]
-        }
-    }
-    ranges.add(s to prev)
-    return ranges.joinToString(",") { (a, b) -> if (a == b) "$a" else "$a-$b" } + "周"
-}
 
 /** 计算当前教学周：优先手动指定，否则按第一周周一推算 */
 fun resolveCurrentWeek(startMonday: String): Int {
     if (Repository.weekOverride > 0) return Repository.weekOverride
     return try {
-        val start = LocalDate.parse(startMonday, DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+        val start = LocalDate.parse(startMonday, DATE_FMT)
         val diff = ChronoUnit.DAYS.between(start, LocalDate.now())
         if (diff < 0) 1 else (diff / 7 + 1).toInt()
     } catch (e: Exception) {

@@ -16,12 +16,21 @@ android {
         versionName "2.0"
     }
 
+    // 签名密钥信息放在【不入库】的 keystore.properties（含密码）。缺失时 release 不签名。
+    def keystoreProps = new Properties()
+    def ksf = rootProject.file("keystore.properties")
+    if (ksf.exists()) {
+        ksf.withInputStream { keystoreProps.load(it) }
+    }
+
     signingConfigs {
         release {
-            storeFile file('njfu-release.jks')
-            storePassword 'njfu2026'
-            keyAlias 'njfu'
-            keyPassword 'njfu2026'
+            if (ksf.exists()) {
+                storeFile file(keystoreProps['storeFile'] ?: 'njfu-release.jks')
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
         }
     }
 
@@ -29,7 +38,7 @@ android {
         release {
             minifyEnabled true
             shrinkResources true
-            signingConfig signingConfigs.release
+            if (ksf.exists()) signingConfig signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
         debug {

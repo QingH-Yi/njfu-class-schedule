@@ -119,4 +119,26 @@ class MainScreenRobolectricTest {
         rule.waitForIdle()
         assertTrue("周日起点翻周后仍应显示课程名", hasText("信号与系统分析"))
     }
+
+    @Test
+    fun blankCellSelectsOnTapAndAddsOnDoubleTap() {
+        seed()
+        rule.setContent { ScheduleApp(mutableStateOf(0)) }
+        rule.waitForIdle()
+        // 周六是空白格（testTag = b:6:1），避开启用了"整周实习"覆盖的周一到周五。
+        // 课表 pager 会同时组合相邻 3 页，同名 testTag 有 3 个；取中间那一页（当前可见的）那个。
+        val blanks = rule.onAllNodesWithTag("b:6:1")
+        assertTrue("应能找到空白格", blanks.fetchSemanticsNodes().isNotEmpty())
+        val blank = blanks[minOf(1, blanks.fetchSemanticsNodes().size - 1)]
+        // 单击：只选中，不该弹出"添加课程"对话框
+        blank.performTouchInput { click() }
+        rule.waitForIdle()
+        assertTrue("单击空白格不该弹添加框",
+            rule.onAllNodesWithText("课程名（必填）").fetchSemanticsNodes().isEmpty())
+        // 双击：弹出"添加课程"对话框
+        blank.performTouchInput { doubleClick() }
+        rule.waitForIdle()
+        assertTrue("双击空白格应弹出添加框",
+            rule.onAllNodesWithText("课程名（必填）").fetchSemanticsNodes().isNotEmpty())
+    }
 }

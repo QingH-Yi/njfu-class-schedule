@@ -10,13 +10,14 @@ node_modules/
 # 签名密钥（绝不入库，丢了无法覆盖安装）
 *.jks
 *.keystore
+# 签名用的密码文件（含明文密码，绝不入库）
+keystore.properties
 
 # 含真实学号/班级信息的测试快照，仅限本机回归测试
 apk/app/src/test/resources/kb_list.html
 apk/app/src/test/resources/kb_loadkb.html
 
-# 交接手册含签名密码与测试账号，仅本机留存
-交接手册.md
+# 交接手册（已脱敏，可入库）
 
 # 成品 APK 通过 GitHub Releases 分发，不进仓库
 *.apk

@@ -662,9 +662,9 @@ fun TimetableView(
     val slotH = 58.dp
     // 左列"节次/时间"与课表格子共用同一个纵向滚动状态，保证上下滑动时一起动、不错位
     val vs = rememberScrollState()
-    var selectedId by remember { mutableStateOf<String?>(null) }
+    var selectedKey by remember { mutableStateOf<String?>(null) }
     // 翻周时清除选中高亮
-    LaunchedEffect(pagerState.currentPage) { selectedId = null }
+    LaunchedEffect(pagerState.currentPage) { selectedKey = null }
     // 一周起点可设为周日：列顺序变化，日期按 周日=该周最后一天 重排
     // 外观设置只读一次，避免在每页/每次重绘里反复读 SharedPreferences
     val showOtherWeek = Repository.showOtherWeekCourses
@@ -850,15 +850,18 @@ fun TimetableView(
                                                         else color.first
                                                     )
                                                     .then(
-                                                        if (!dimmed && selectedId == c.id)
+                                                        if (!dimmed && selectedKey == "c:${c.id}")
                                                             Modifier.border(2.dp, th.accent, RoundedCornerShape(10.dp))
                                                         else Modifier
                                                     )
                                                     .pointerInput(c.id, dimmed) {
+                                                        val key = "c:${c.id}"
                                                         detectTapGestures(
+                                                            // 单击选中；选中后再次单击（或直接双击）= 打开详情
                                                             onTap = {
                                                                 if (dimmed) onCourseClick(c)
-                                                                else selectedId = if (selectedId == c.id) null else c.id
+                                                                else if (selectedKey == key) onCourseClick(c)
+                                                                else selectedKey = key
                                                             },
                                                             onDoubleTap = { onCourseClick(c) }
                                                         )
@@ -893,17 +896,32 @@ fun TimetableView(
                                                 }
                                             }
                                         } else {
-                                            // 空白格：点按手动添加课程
+                                            // 空白格：单击选中、双击（或选中后再次单击）才添加课程
+                                            val blankKey = "b:$d:${seg.start}"
+                                            val blankSel = selectedKey == blankKey
                                             Box(
                                                 Modifier
                                                     .padding(horizontal = 1.dp, vertical = 1.dp)
                                                     .height(slotH * seg.span - 2.dp)
                                                     .fillMaxWidth()
                                                     .clip(RoundedCornerShape(8.dp))
-                                                    .clickable { onAddCourse(d, seg.start, week) },
+                                                    .then(if (blankSel) Modifier.border(2.dp, th.accent, RoundedCornerShape(8.dp)) else Modifier)
+                                                    .testTag(blankKey)
+                                                    .pointerInput(d, seg.start) {
+                                                        detectTapGestures(
+                                                            onTap = {
+                                                                if (selectedKey == blankKey) onAddCourse(d, seg.start, week)
+                                                                else selectedKey = blankKey
+                                                            },
+                                                            onDoubleTap = { onAddCourse(d, seg.start, week) }
+                                                        )
+                                                    },
                                                 contentAlignment = Alignment.Center
                                             ) {
-                                                Text("+", fontSize = 15.sp, color = th.textSecondary.copy(alpha = 0.25f))
+                                                Text(
+                                                    "+", fontSize = 15.sp,
+                                                    color = th.textSecondary.copy(alpha = if (blankSel) 0.75f else 0.25f)
+                                                )
                                             }
                                         }
                                     }

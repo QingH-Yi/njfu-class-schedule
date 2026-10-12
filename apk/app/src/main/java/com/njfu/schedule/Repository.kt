@@ -144,39 +144,50 @@ object Repository {
      * onlyThisWeek=true ：只改本周 —— 把这周从原课周次里拆出来，单独生成一条改了内容的课。
      * 改过之后标记 edited=true，重抓时好询问用户是否保留。
      */
+    private fun normSlots(slots: List<Triple<Int, Int, Int>>): List<Triple<Int, Int, Int>> =
+        slots.map {
+            Triple(it.first.coerceIn(1, 7), minOf(it.second, it.third).coerceIn(1, 11), maxOf(it.second, it.third).coerceIn(1, 11))
+        }.distinct()
+
     fun editCourse(
-        course: Course, name: String, teacher: String, location: String, day: Int,
-        startP: Int, endP: Int, weeks: List<Int>, onlyThisWeek: Boolean, currentWeek: Int
+        course: Course, name: String, teacher: String, location: String,
+        slots: List<Triple<Int, Int, Int>>, weeks: List<Int>, onlyThisWeek: Boolean, currentWeek: Int
     ) {
         val cur = loadSchedule()
-        val s = startP.coerceIn(1, 11)
-        val e = endP.coerceIn(s, 11)
-        val d = if (course.day == 0) 0 else day.coerceIn(1, 7)
         val idx = cur.courses.indexOfFirst { it.id == course.id }
         if (idx < 0) return
-        val orig = cur.courses[idx]
-        val list = cur.courses.toMutableList()
-        val nm = name.trim().ifEmpty { orig.name }
-        if (onlyThisWeek) {
-            val origWeeks = if (orig.weeks.isEmpty()) (1..53).toList() else orig.weeks
-            val remain = origWeeks.filter { it != currentWeek }
-            if (remain.isEmpty()) {
-                list[idx] = orig.copy(name = nm, teacher = teacher.trim(), location = location.trim(),
-                    day = d, startPeriod = s, endPeriod = e, weeks = listOf(currentWeek), edited = true)
-            } else {
-                list[idx] = orig.copy(weeks = remain.sorted())
-                list.add(orig.copy(
-                    id = UUID.randomUUID().toString().take(8),
-                    name = nm, teacher = teacher.trim(), location = location.trim(), day = d,
-                    startPeriod = s, endPeriod = e, weeks = listOf(currentWeek), edited = true
-                ))
+        val nm = name.trim()
+        val tc = teacher.trim()
+        val lo = location.trim()
+        val ws = weeks.filter { it in 1..53 }.distinct().sorted()
+        val norm = normSlots(slots)
+        val out = ArrayList<Course>()
+        cur.courses.forEachIndexed { i, c ->
+            if (i != idx) { out.add(c); return@forEachIndexed }
+            val nm2 = nm.ifEmpty { c.name }
+            val isWholeWeek = c.day == 0 && norm.isEmpty()   // 整周课且没选时间 → 保持整周
+            when {
+                isWholeWeek -> out.add(c.copy(name = nm2, teacher = tc, location = lo, weeks = ws, edited = true))
+                norm.isEmpty() -> out.add(c)
+                !onlyThisWeek -> {
+                    val f = norm.first()
+                    out.add(c.copy(name = nm2, teacher = tc, location = lo, day = f.first,
+                        startPeriod = f.second, endPeriod = f.third, weeks = ws, edited = true))
+                    for (sl in norm.drop(1)) out.add(c.copy(id = UUID.randomUUID().toString().take(8),
+                        name = nm2, teacher = tc, location = lo, day = sl.first,
+                        startPeriod = sl.second, endPeriod = sl.third, weeks = ws, edited = true))
+                }
+                else -> {
+                    val origWeeks = if (c.weeks.isEmpty()) (1..53).toList() else c.weeks
+                    val remain = origWeeks.filter { it != currentWeek }
+                    if (remain.isNotEmpty()) out.add(c.copy(weeks = remain.sorted()))
+                    for (sl in norm) out.add(c.copy(id = UUID.randomUUID().toString().take(8),
+                        name = nm2, teacher = tc, location = lo, day = sl.first,
+                        startPeriod = sl.second, endPeriod = sl.third, weeks = listOf(currentWeek), edited = true))
+                }
             }
-        } else {
-            list[idx] = orig.copy(name = nm, teacher = teacher.trim(), location = location.trim(),
-                day = d, startPeriod = s, endPeriod = e,
-                weeks = weeks.filter { it in 1..53 }.distinct().sorted(), edited = true)
         }
-        saveSchedule(cur.copy(courses = list))
+        saveSchedule(cur.copy(courses = out))
     }
 
     /** 学分三轮抓取合并：仅采纳三轮结果完全一致的课名（防爬错） */

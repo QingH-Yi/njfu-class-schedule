@@ -13,6 +13,7 @@ node_modules/
 
 # 含真实学号/班级信息的测试快照，仅限本机回归测试
 apk/app/src/test/resources/kb_list.html
+apk/app/src/test/resources/kb_loadkb.html
 
 # 交接手册含签名密码与测试账号，仅本机留存
 交接手册.md

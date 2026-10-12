@@ -267,10 +267,14 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        /** GitHub 用户名（改名后统一在这里改） */
+        const val GITHUB_USER = "QingH-Yi"
+        /** 站点主页 */
+        const val SITE_URL = "https://qingh-yi.github.io/njfu-class-schedule/"
         /** GitHub 仓库主页（教程/设置页展示，检查更新也指向这里） */
-        const val GITHUB_URL = "https://github.com/wangbq666/njfu-class-schedule"
+        const val GITHUB_URL = "https://github.com/$GITHUB_USER/njfu-class-schedule"
         private const val RELEASE_API =
-                "https://api.github.com/repos/wangbq666/njfu-class-schedule/releases/latest"
+                "https://api.github.com/repos/$GITHUB_USER/njfu-class-schedule/releases/latest"
 
         fun currentVersionName(ctx: android.content.Context): String = try {
             ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: ""
@@ -1367,7 +1371,7 @@ fun SettingsDialog(
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "GitHub：github.com/wangbq666（作者）",
+                    "GitHub：github.com/${MainActivity.GITHUB_USER}（作者）",
                     fontSize = 12.sp, color = th.textSecondary,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1376,7 +1380,7 @@ fun SettingsDialog(
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "南林课程表 v${MainActivity.currentVersionName(context)} · 作者 ID：wangbq666",
+                    "南林课程表 v${MainActivity.currentVersionName(context)} · 作者 ID：${MainActivity.GITHUB_USER}",
                     fontSize = 11.sp, color = th.textSecondary.copy(alpha = 0.8f),
                     modifier = Modifier.padding(vertical = 4.dp)
                 )
@@ -1494,7 +1498,7 @@ fun TutorialDialog(th: AppColors, onDone: () -> Unit) {
             Text("使用教程", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = th.textPrimary)
             Spacer(Modifier.height(2.dp))
             Text(
-                "GitHub：github.com/wangbq666",
+                "GitHub：github.com/${MainActivity.GITHUB_USER}",
                 fontSize = 12.sp, fontWeight = FontWeight.Medium, color = th.accent,
                 modifier = Modifier
                     .clickable { openUrl(context, MainActivity.GITHUB_URL) }

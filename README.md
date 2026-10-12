@@ -2,7 +2,8 @@
 
 南京林业大学课程表应用——自动导入教务系统（强智）课表，支持三校区作息、教学周自动计算。
 
-**下载安装**：前往 [Releases](https://github.com/wangbq666/njfu-class-schedule/releases) 下载 `南林课程表-vX.X-release.apk` 直接安装。
+**下载安装**：前往 [Releases](https://github.com/QingH-Yi/njfu-class-schedule/releases) 下载 `南林课程表-vX.X-release.apk` 直接安装。
+**官网 / 介绍页**：<https://qingh-yi.github.io/njfu-class-schedule/>
 
 ## 功能
 
@@ -45,4 +46,4 @@ gradle assembleRelease   # 需自备签名密钥（不入库），在 app/build.
 
 ## 更新日志
 
-见 [CHANGELOG.md](CHANGELOG.md)，或 [Releases](https://github.com/wangbq666/njfu-class-schedule/releases)。
+见 [CHANGELOG.md](CHANGELOG.md)，或 [Releases](https://github.com/QingH-Yi/njfu-class-schedule/releases)。

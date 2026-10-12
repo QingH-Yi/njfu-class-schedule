@@ -223,5 +223,22 @@ object Repository {
         get() = sp.getBoolean("check_update", true)
         set(v) { sp.edit().putBoolean("check_update", v).apply() }
 
+    /** 非本周课程显示：false=不显示（默认），true=半透明显示在原时段 */
+    var showOtherWeekCourses: Boolean
+        get() = sp.getBoolean("show_other_week", false)
+        set(v) { sp.edit().putBoolean("show_other_week", v).apply() }
+
     fun hasCredentials(): Boolean = user.isNotEmpty() && savedPass && pass.isNotEmpty()
+
+    // ---- 覆盖安装处理 ----
+    /** 上次运行过的 versionCode（0=首次安装）。覆盖安装后据此清残留、并强制抓取一次 */
+    var appVersion: Int
+        get() = sp.getInt("app_version", 0)
+        set(v) { sp.edit().putInt("app_version", v).apply() }
+
+    /** 清掉本地课表数据（保留账号/外观/学期起始日等设置），用于覆盖安装后清残留 */
+    fun clearCourses() {
+        val cur = loadSchedule()
+        saveSchedule(cur.copy(term = "", courses = emptyList()))
+    }
 }

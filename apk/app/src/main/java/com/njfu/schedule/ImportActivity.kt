@@ -52,6 +52,13 @@ class ImportActivity : ComponentActivity() {
             settings.domStorageEnabled = true
             settings.loadWithOverviewMode = true
             settings.useWideViewPort = true
+            // 拖动/缩放更顺滑：支持双指缩放（不显示丑陋的缩放按钮）、去掉边缘回弹光晕、不抢初始焦点
+            settings.setSupportZoom(true)
+            settings.builtInZoomControls = true
+            settings.displayZoomControls = false
+            settings.setNeedInitialFocus(false)
+            overScrollMode = View.OVER_SCROLL_NEVER
+            isScrollbarFadingEnabled = true
             // 桌面 UA：统一认证/教务给手机 UA 返回另一套模板，自动登录只适配桌面版
             settings.userAgentString = MainActivity.DESKTOP_UA
             addJavascriptInterface(GrabInterface(), "AndroidGrab")
@@ -148,12 +155,29 @@ class ImportActivity : ComponentActivity() {
     }
 
     private fun doGrab() {
-        status.text = "正在抓取当前页面…"
-        synchronized(creditRounds) { creditRounds.clear() }
+        status.text = "正在抓取课表（第1/3轮）…"
+        tableRounds.clear()
+        tableResults.clear()
+        creditRounds.clear()
         grabbingCredits = false
         importFinished = false
         lastAdded = 0
-        webView.evaluateJavascript(MainActivity.GRAB_JS, null)
+        // 所有内容都抓三轮：课表抓 3 轮，签名一致才入库；随后学分再抓 3 轮
+        for (d in longArrayOf(0, 1500, 3000)) {
+            webView.postDelayed({
+                try { webView.evaluateJavascript(MainActivity.GRAB_JS, null) } catch (_: Exception) {}
+            }, d)
+        }
+        // 兜底：30 秒没走完流程就收尾（不影响已保存课表）
+        webView.postDelayed({ finishImport(0) }, 30000)
+    }
+
+    /** 课表规范化签名：三轮签名一致才算没抓错 */
+    private fun tableSignature(r: ParseResult): String = buildString {
+        append(r.term)
+        r.courses.sortedWith(compareBy({ it.day }, { it.startPeriod }, { it.name })).forEach {
+            append("|${it.name}#${it.day}#${it.startPeriod}#${it.endPeriod}#${it.teacher}#${it.location}#${it.weeks.joinToString(",")}")
+        }
     }
 
     /** 学分导入收尾（三轮齐了或超时兜底） */
@@ -168,9 +192,11 @@ class ImportActivity : ComponentActivity() {
         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
         setResult(RESULT_OK)
         // 稍作停留让用户看到结果
-        webView.postDelayed({ finish() }, 1200)
+        webView.postDelayed({ finish() }, 1500)
     }
 
+    private val tableRounds = ArrayList<String>()
+    private val tableResults = ArrayList<ParseResult>()
     private val creditRounds = ArrayList<Map<String, String>>()
     private var grabbingCredits = false
     private var importFinished = false
@@ -180,24 +206,40 @@ class ImportActivity : ComponentActivity() {
         @JavascriptInterface
         fun receive(html: String) {
             runOnUiThread {
+                if (importFinished) return@runOnUiThread
                 val result = JwxtParser.parseHtml(html)
                 if (result == null || result.courses.isEmpty()) {
                     status.text = "没解析到课表。请先进「学期理论课表」选好学期，再抓取。"
                     Toast.makeText(this@ImportActivity, "未识别到课表", Toast.LENGTH_SHORT).show()
-                } else {
-                    lastAdded = Repository.addCourses(result.courses, result.term)
-                    // 课表到手后接着抓三轮学分（同一接口抓三次，一致才采信）
-                    grabbingCredits = true
-                    importFinished = false
-                    status.text = "已导入 $lastAdded 门课，正在爬学分（第1/3轮）…"
-                    val js = loadKbJs(result.term.ifEmpty { Repository.loadSchedule().term })
-                    for (d in longArrayOf(500, 3000, 5500)) {
-                        webView.postDelayed({
-                            try { webView.evaluateJavascript(js, null) } catch (_: Exception) {}
-                        }, d)
+                    return@runOnUiThread
+                }
+                tableResults.add(result)
+                tableRounds.add(tableSignature(result))
+                when {
+                    tableRounds.size < 3 -> {
+                        status.text = "正在抓取课表（第${tableRounds.size + 1}/3轮）…"
                     }
-                    // 兜底：学分 12 秒内没抓齐也完成导入（不影响课表本身）
-                    webView.postDelayed({ finishImport(0) }, 12000)
+                    tableRounds.toSet().size != 1 -> {
+                        // 三轮不一致：宁可不导，防止爬错
+                        importFinished = true
+                        status.text = "三轮抓取结果不一致，为防爬错本次未导入，请重试。"
+                        Toast.makeText(this@ImportActivity, "三轮结果不一致，请重试", Toast.LENGTH_LONG).show()
+                        webView.postDelayed({ finish() }, 1800)
+                    }
+                    else -> {
+                        // 每次抓取都是覆盖保存（备忘/学分按 名称|星期|起始节 自动保留）
+                        lastAdded = tableResults[0].courses.size
+                        Repository.replaceCourses(tableResults[0].courses, tableResults[0].term)
+                        // 课表三轮一致已入库，接着抓三轮学分
+                        grabbingCredits = true
+                        status.text = "课表校验一致：已覆盖导入 $lastAdded 门，正在爬学分（第1/3轮）…"
+                        val js = loadKbJs(tableResults[0].term.ifEmpty { Repository.loadSchedule().term })
+                        for (d in longArrayOf(500, 3000, 5500)) {
+                            webView.postDelayed({
+                                try { webView.evaluateJavascript(js, null) } catch (_: Exception) {}
+                            }, d)
+                        }
+                    }
                 }
             }
         }

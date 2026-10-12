@@ -3,10 +3,8 @@ package com.njfu.schedule
 import android.annotation.SuppressLint
 import android.app.DatePickerDialog
 import android.content.Intent
-import android.content.res.Configuration
 import android.net.Uri
 import android.os.Bundle
-import android.view.Gravity
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
@@ -48,11 +46,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.net.HttpURLConnection
@@ -78,9 +77,24 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         Repository.init(this)
+
+        // 覆盖安装（版本号变了且不是首次安装）：先清掉旧版本残留的课表数据，再强制抓取一次
+        val verCode = try {
+            packageManager.getPackageInfo(packageName, 0).versionCode
+        } catch (e: Exception) {
+            0
+        }
+        val upgraded = Repository.appVersion != 0 && Repository.appVersion != verCode
+        if (upgraded) {
+            // 覆盖安装：只清本地课表（保留账号/外观）；不在启动路径建 WebView（会拖慢开机）
+            Repository.clearCourses()
+        }
+        Repository.appVersion = verCode
+
         setContent { ScheduleApp(refreshSignal) }
-        // 打开时自动更新课表（尽力而为，依赖已保存的登录会话）
-        if (Repository.autoUpdate && Repository.hasCredentials()) {
+        // 打开时自动更新课表（尽力而为，依赖已保存的登录会话）；
+        // 覆盖安装后的第一次打开即使关了自动更新也强制抓一次，保证数据是干净的
+        if (Repository.hasCredentials() && (Repository.autoUpdate || upgraded)) {
             runBackgroundUpdate()
         }
     }
@@ -168,18 +182,33 @@ class MainActivity : ComponentActivity() {
     }
 
     inner class BgGrab {
+        private val tableRounds = ArrayList<String>()
+        private val tableResults = ArrayList<ParseResult>()
         private val creditRounds = ArrayList<Map<String, String>>()
         private var roundsStarted = false
 
         @JavascriptInterface
         fun receive(html: String) {
-            val result = JwxtParser.parseHtml(html)
-            if (result != null && result.courses.isNotEmpty()) {
-                Repository.replaceCourses(result.courses, result.term)
-                runOnUiThread {
-                    refreshSignal.value++
-                    startCreditRounds(result.term.ifEmpty { Repository.loadSchedule().term })
-                }
+            val result = JwxtParser.parseHtml(html) ?: return
+            if (result.courses.isEmpty()) return
+            var done = false
+            synchronized(tableRounds) {
+                if (tableRounds.size >= 3 || creditRounds.isNotEmpty()) return
+                tableRounds.add(tableSignature(result))
+                tableResults.add(result)
+                done = tableRounds.size == 3
+            }
+            if (!done) return
+            // 课表三轮完全一致才入库（防抓错/抓一半）；不一致保持旧课表不动
+            if (tableRounds.toSet().size != 1) {
+                runOnUiThread { destroyBgWebView() }
+                return
+            }
+            val r = tableResults[0]
+            Repository.replaceCourses(r.courses, r.term)
+            runOnUiThread {
+                refreshSignal.value++
+                startCreditRounds(r.term.ifEmpty { Repository.loadSchedule().term })
             }
         }
 
@@ -213,6 +242,14 @@ class MainActivity : ComponentActivity() {
         /** 三轮学分抓取只启动一次（GRAB_JS 会多次回传课表） */
         fun markRoundsStarted(): Boolean = synchronized(this) {
             if (roundsStarted) false else { roundsStarted = true; true }
+        }
+    }
+
+    /** 课表规范化签名：三轮签名一致才算没抓错 */
+    private fun tableSignature(r: ParseResult): String = buildString {
+        append(r.term)
+        r.courses.sortedWith(compareBy({ it.day }, { it.startPeriod }, { it.name })).forEach {
+            append("|${it.name}#${it.day}#${it.startPeriod}#${it.endPeriod}#${it.teacher}#${it.location}#${it.weeks.joinToString(",")}")
         }
     }
 
@@ -464,8 +501,7 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
         val c = schedule.courses.firstOrNull { it.id == c0.id } ?: c0
         val color = th.cardColor(c.name)
         var note by remember(c.id) { mutableStateOf(c.note ?: "") }
-        var credit by remember(c.id) { mutableStateOf(c.credit ?: "") }
-        val dirty = note.trim() != (c.note ?: "") || credit.trim() != (c.credit ?: "")
+        val noteDirty = note.trim() != (c.note ?: "")
         // 同名课在本周的其他上课时间（如周三/周五都上 → 逐行列出）
         val sameName = schedule.courses
             .filter { it.name == c.name && it.day != 0 }
@@ -499,44 +535,34 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                     }
                 }
                 Spacer(Modifier.height(12.dp))
-                if (c.day == 0) InfoRow("⏰", "节次", "周一至周五 · 第1-8节", th)
-                else PeriodRows(c, sameName, schedule.campus, th)
-                InfoRow("📍", "教室", c.location, th)
-                InfoRow("👨‍🏫", "老师", c.teacher, th)
-                InfoRow("🔁", "周次", weekLabel(c.weeks), th)
-                if (!c.credit.isNullOrEmpty()) InfoRow("🎓", "学分", c.credit, th)
-                Spacer(Modifier.height(10.dp))
-                HorizontalDivider(color = th.divider, thickness = 1.dp)
-                Spacer(Modifier.height(10.dp))
-                Text("📝 备忘录", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = th.textSecondary)
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(
-                    note, { note = it },
-                    placeholder = {
-                        Text(
-                            "记点什么…（作业、考试、带书）",
-                            fontSize = 12.sp, color = th.textSecondary.copy(alpha = 0.7f)
-                        )
-                    },
-                    textStyle = LocalTextStyle.current.copy(fontSize = 13.sp, color = th.textPrimary),
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 74.dp)
-                )
-                Spacer(Modifier.height(10.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("🎓 学分", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = th.textSecondary)
-                    Spacer(Modifier.width(10.dp))
+                // 信息区 + 备忘录放进有上限的可滚动区域：字段多或小屏时也不裁切、不互相挤
+                Column(
+                    Modifier
+                        .weight(1f, fill = false)
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
+                    if (c.day == 0) InfoRow("⏰", "节次", "周一至周五 · 第1-8节", th)
+                    else PeriodRows(c, sameName, schedule.campus, th)
+                    InfoRow("📍", "教室", c.location, th)
+                    InfoRow("👨‍🏫", "老师", c.teacher, th)
+                    InfoRow("🔁", "周次", weekLabel(c.weeks), th)
+                    InfoRow("🎓", "学分", c.credit.orEmpty(), th)
+                    Spacer(Modifier.height(10.dp))
+                    HorizontalDivider(color = th.divider, thickness = 1.dp)
+                    Spacer(Modifier.height(10.dp))
+                    Text("📝 备忘录", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = th.textSecondary)
+                    Spacer(Modifier.height(6.dp))
                     OutlinedTextField(
-                        credit,
-                        { s -> credit = s.filter { it.isDigit() || it == '.' }.take(5) },
+                        note, { note = it },
                         placeholder = {
                             Text(
-                                "自动爬取，可修正",
+                                "记点什么…（作业、考试、带书）",
                                 fontSize = 12.sp, color = th.textSecondary.copy(alpha = 0.7f)
                             )
                         },
                         textStyle = LocalTextStyle.current.copy(fontSize = 13.sp, color = th.textPrimary),
-                        singleLine = true,
-                        modifier = Modifier.width(130.dp)
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 74.dp)
                     )
                 }
                 Spacer(Modifier.height(10.dp))
@@ -545,18 +571,19 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (dirty) {
+                    if (noteDirty) {
                         Text("未保存", fontSize = 11.sp, color = th.textSecondary)
                         Spacer(Modifier.width(8.dp))
                     }
                     TextButton(
-                        enabled = dirty,
+                        enabled = noteDirty,
                         onClick = {
-                            Repository.updateCourseMeta(c.id, note.trim(), credit.trim())
+                            // 学分以爬取的为准（只读），保存时原样带回归里
+                            Repository.updateCourseMeta(c.id, note.trim(), c.credit ?: "")
                             schedule = Repository.loadSchedule()
                             detail = schedule.courses.firstOrNull { it.id == c.id } ?: c0
                         }
-                    ) { Text("保存", color = if (dirty) th.accent else th.textSecondary) }
+                    ) { Text("保存", color = if (noteDirty) th.accent else th.textSecondary) }
                     Spacer(Modifier.width(4.dp))
                     TextButton(onClick = close) { Text("关闭", color = th.textSecondary) }
                 }
@@ -596,7 +623,10 @@ fun CourseCard(c: Course, campus: String, th: AppColors) {
         colors = CardDefaults.cardColors(containerColor = th.surface)
     ) {
         Column(Modifier.padding(12.dp)) {
-            Text(c.name, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = th.textPrimary)
+            Text(
+                c.name, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = th.textPrimary,
+                maxLines = 2, overflow = TextOverflow.Ellipsis
+            )
             Spacer(Modifier.height(4.dp))
             val info = buildList {
                 add("⏰ $span" + if (t1.isNotEmpty() && t2.isNotEmpty()) "（$t1-$t2）" else "")
@@ -630,44 +660,35 @@ fun TimetableView(
     val viewedWeek by remember { derivedStateOf { pagerState.currentPage + 1 } }
     val scope = rememberCoroutineScope()
     val slotH = 58.dp
+    // 左列"节次/时间"与课表格子共用同一个纵向滚动状态，保证上下滑动时一起动、不错位
+    val vs = rememberScrollState()
     var selectedId by remember { mutableStateOf<String?>(null) }
     // 翻周时清除选中高亮
     LaunchedEffect(pagerState.currentPage) { selectedId = null }
     // 一周起点可设为周日：列顺序变化，日期按 周日=该周最后一天 重排
-    val dayCols = if (Repository.weekStartSunday) listOf(7, 1, 2, 3, 4, 5, 6) else (1..7).toList()
-    val dateIdx: (Int) -> Int = if (Repository.weekStartSunday)
+    // 外观设置只读一次，避免在每页/每次重绘里反复读 SharedPreferences
+    val showOtherWeek = Repository.showOtherWeekCourses
+    val startSunday = Repository.weekStartSunday
+    val dayCols = if (startSunday) listOf(7, 1, 2, 3, 4, 5, 6) else (1..7).toList()
+    val dateIdx: (Int) -> Int = if (startSunday)
         { i -> if (i == 0) 6 else i - 1 } else { i -> i }
+    // 日期条对齐点：该周第一天在日期条上的 index（周日起点=该周周日，周一起点=该周周一）
+    val weekStartIndex: (Int) -> Int = if (startSunday)
+        { w -> 6 + (w - 1) * 7 } else { w -> 7 + (w - 1) * 7 }
 
     Column(Modifier.fillMaxSize()) {
-        // 表头：全年日期条（53 周），可横向滚动；松手后按可见日期判定周次并对齐
-        val headerState = rememberLazyListState()
-        val headerDragging by headerState.interactionSource.collectIsDraggedAsState()
+        // 日期条：不可手动拖动（拖动太飘、停不住，已去掉），与课表"锁死"——
+        // 课表横向滑到哪，日期条就同步跟到哪（7 天 = 1 周 = 1 页），全程对齐、不跳
+        val headerState = rememberLazyListState(
+            initialFirstVisibleItemIndex = weekStartIndex(currentWeek.coerceIn(1, 53)).coerceIn(0, 53 * 7 - 1)
+        )
+        // 日期条最左那天的"天序号"基准（周一=7、周日=6），把点选的日期换算成周次用
+        val dayIndexBase = weekStartIndex(1)
         val stripStart = remember(schedule.termStartMonday) {
             try {
                 LocalDate.parse(schedule.termStartMonday, DateTimeFormatter.ofPattern("yyyy-MM-dd")).minusDays(7)
             } catch (e: Exception) {
                 null
-            }
-        }
-        var headerInitiated by remember { mutableStateOf(false) }
-        // 日期条拖动松手：判定周次 → 对齐 pager 与日期条（唯一会写 pager 的路径）
-        LaunchedEffect(headerDragging) {
-            if (headerDragging) {
-                headerInitiated = true
-            } else if (headerInitiated && stripStart != null) {
-                val w = weekOfDate(
-                    schedule.termStartMonday,
-                    stripStart.plusDays(headerState.firstVisibleItemIndex.toLong()), 53
-                )
-                if (pagerState.currentPage != w - 1) pagerState.animateScrollToPage(w - 1)
-                headerState.animateScrollToItem(7 + (w - 1) * 7)
-                headerInitiated = false
-            }
-        }
-        // pager 翻页时只同步日期条位置，绝不写 pager（避免滑动中被拽回）
-        LaunchedEffect(viewedWeek) {
-            if (!headerInitiated && !headerDragging && stripStart != null) {
-                headerState.animateScrollToItem(7 + (viewedWeek - 1) * 7)
             }
         }
         Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -680,24 +701,43 @@ fun TimetableView(
                         .padding(horizontal = 5.dp, vertical = 2.dp)
                 )
             }
-            LazyRow(state = headerState, modifier = Modifier.weight(1f)) {
+            BoxWithConstraints(Modifier.weight(1f)) {
+            // 每个日期格子的宽度 = 课表每列的宽度（都是"可用宽度 ÷ 7"）→ 日期和课程竖直方向严格对齐；
+            // 切换 周一/周日 起点时两边一起左移/右移一列，始终对齐
+            val cellW = maxWidth / 7f
+            val cellPx = with(LocalDensity.current) { cellW.toPx() }.coerceAtLeast(1f)
+            // 课表(pager)横向位置 → 日期条对应位置，逐帧连续锁死
+            LaunchedEffect(pagerState, startSunday, cellPx) {
+                val maxIdx = 53 * 7 - 1
+                snapshotFlow { pagerState.currentPage + pagerState.currentPageOffsetFraction }.collect { p ->
+                    val d = dayIndexBase + p * 7f
+                    val idx = d.toInt().coerceIn(0, maxIdx)
+                    val off = ((d - idx) * cellPx).toInt().coerceAtLeast(0)
+                    try {
+                        headerState.scrollToItem(idx, off)
+                    } catch (e: Exception) {
+                    }
+                }
+            }
+            LazyRow(
+                state = headerState,
+                userScrollEnabled = false,
+                modifier = Modifier.fillMaxWidth().testTag("dateStrip")
+            ) {
             items(count = 53 * 7) { i ->
                 val date = stripStart?.plusDays(i.toLong())
-                val w = if (date != null) weekOfDate(schedule.termStartMonday, date, 53) else viewedWeek
-                val inViewed = w == viewedWeek
+                // 当前显示的这一周 = 从 weekStartIndex(viewedWeek) 起的 7 天（与课表列顺序一致）
+                val inViewed = i >= weekStartIndex(viewedWeek) && i < weekStartIndex(viewedWeek) + 7
                 val isToday = date == today
                 Column(
                     Modifier
-                        .width(46.dp)
+                        .width(cellW)
                         .height(44.dp)
                         .background(if (inViewed) th.todayTint else Color.Transparent)
                         .clickable {
                             if (date != null) {
-                                val ww = weekOfDate(schedule.termStartMonday, date, 53)
-                                scope.launch {
-                                    pagerState.animateScrollToPage(ww - 1)
-                                    headerState.animateScrollToItem(7 + (ww - 1) * 7)
-                                }
+                                val ww = (((i - dayIndexBase) / 7) + 1).coerceIn(1, 53)
+                                scope.launch { pagerState.animateScrollToPage(ww - 1) }
                             }
                         },
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -713,6 +753,7 @@ fun TimetableView(
                         fontSize = 9.sp, color = if (isToday) th.accent else th.textSecondary
                     )
                 }
+            }
             }
             }
         }
@@ -734,24 +775,27 @@ fun TimetableView(
         }
 
         Row(Modifier.weight(1f).fillMaxWidth()) {
-            // 左列：节次 + 上课时间（固定不随翻页滚动）
-            Column(Modifier.width(46.dp)) {
+            // 左列：节次 + 上课时间（与课表格子共用纵向滚动状态，上下滑动时一起动）
+            Column(Modifier.width(46.dp).verticalScroll(vs)) {
+                // 当前正上的节次整列只算一次（原来每节都重新解析时间，是滑动卡顿的一处）
+                val nowP = if (viewedWeek == currentWeek) nowPeriodIndex(schedule.campus) else -1
+                val campusTimes = CampusTimes.times(schedule.campus)
                 for (p in 1..11) {
-                    val nowP = viewedWeek == currentWeek && nowPeriod(schedule.campus, p)
+                    val isNow = p == nowP
                     Box(Modifier.height(slotH).fillMaxWidth(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Text(
                                 "$p", fontSize = 11.sp, lineHeight = 13.sp, fontWeight = FontWeight.Bold,
-                                color = if (nowP) th.accent else th.textSecondary
+                                color = if (isNow) th.accent else th.textSecondary
                             )
-                            val t = CampusTimes.times(schedule.campus)[p]
+                            val t = campusTimes[p]
                             Text(
                                 t?.first ?: "", fontSize = 8.sp, lineHeight = 10.sp,
-                                color = if (nowP) th.accent else th.textSecondary
+                                color = if (isNow) th.accent else th.textSecondary
                             )
                             Text(
                                 t?.second ?: "", fontSize = 8.sp, lineHeight = 10.sp,
-                                color = if (nowP) th.accent else th.textSecondary
+                                color = if (isNow) th.accent else th.textSecondary
                             )
                         }
                     }
@@ -760,17 +804,24 @@ fun TimetableView(
             // 左右滑动切换周次，每页一周的 7 列课程
             HorizontalPager(
                 state = pagerState,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).testTag("weekPager"),
                 beyondViewportPageCount = 1
             ) { page ->
                 val week = page + 1
-                val weekCourses = remember(schedule.courses, week) {
+                val showOther = showOtherWeek
+                val inWeek = remember(schedule.courses, week) {
                     schedule.courses.filter { it.weeks.isEmpty() || week in it.weeks }
                 }
-                val byDay = weekCourses.groupBy { it.day }
-                val internships = weekCourses.filter { it.day == 0 }
+                val otherWeek = remember(schedule.courses, week, showOther) {
+                    if (showOther) schedule.courses
+                        .filter { it.weeks.isNotEmpty() && week !in it.weeks && it.day != 0 }
+                    else emptyList()
+                }
+                val byDay = inWeek.groupBy { it.day }
+                val othersByDay = otherWeek.groupBy { it.day }
+                val internships = inWeek.filter { it.day == 0 }
                 val dates = weekDates(schedule.termStartMonday, week)
-                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                Column(Modifier.fillMaxSize().verticalScroll(vs)) {
                     Box(Modifier.fillMaxWidth()) {
                         Row(Modifier.fillMaxWidth()) {
                             for ((i, d) in dayCols.withIndex()) {
@@ -780,26 +831,34 @@ fun TimetableView(
                                         .height(slotH * 11)
                                         .background(if (dates.getOrNull(dateIdx(i)) == today) th.todayTint else Color.Transparent)
                                 ) {
-                                    for (seg in remember(week, schedule.courses) { daySegments(byDay[d] ?: emptyList()) }) {
+                                    for (seg in remember(week, inWeek, otherWeek) {
+                                        daySegments(byDay[d] ?: emptyList(), othersByDay[d] ?: emptyList())
+                                    }) {
                                         val c = seg.course
                                         if (c != null) {
                                             val color = th.cardColor(c.name)
+                                            val dimmed = seg.dim
+                                            val bodyAlpha = if (dimmed) 0.55f else 1f
                                             Box(
                                                 Modifier
                                                     .padding(horizontal = 1.dp, vertical = 2.dp)
                                                     .height(slotH * seg.span - 4.dp)
                                                     .fillMaxWidth()
                                                     .clip(RoundedCornerShape(10.dp))
-                                                    .background(color.first)
+                                                    .background(
+                                                        if (dimmed) color.first.copy(alpha = 0.30f)
+                                                        else color.first
+                                                    )
                                                     .then(
-                                                        if (selectedId == c.id)
+                                                        if (!dimmed && selectedId == c.id)
                                                             Modifier.border(2.dp, th.accent, RoundedCornerShape(10.dp))
                                                         else Modifier
                                                     )
-                                                    .pointerInput(c.id) {
+                                                    .pointerInput(c.id, dimmed) {
                                                         detectTapGestures(
                                                             onTap = {
-                                                                selectedId = if (selectedId == c.id) null else c.id
+                                                                if (dimmed) onCourseClick(c)
+                                                                else selectedId = if (selectedId == c.id) null else c.id
                                                             },
                                                             onDoubleTap = { onCourseClick(c) }
                                                         )
@@ -808,22 +867,25 @@ fun TimetableView(
                                                 Column(Modifier.padding(4.dp)) {
                                                     Text(
                                                         c.name, fontSize = 10.sp, lineHeight = 12.sp,
-                                                        fontWeight = FontWeight.SemiBold, color = color.second
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = color.second.copy(alpha = bodyAlpha)
                                                     )
                                                     if (c.location.isNotEmpty()) {
+                                                        // 教室完整显示、不截断——不点进详情也能看到
                                                         Text(
-                                                            "@${c.location}", fontSize = 9.sp, lineHeight = 11.sp,
-                                                            color = color.second.copy(alpha = 0.75f)
+                                                            c.location, fontSize = 9.sp, lineHeight = 11.sp,
+                                                            color = color.second.copy(alpha = 0.8f * bodyAlpha)
                                                         )
                                                     }
                                                     if (c.teacher.isNotEmpty()) {
                                                         Text(
                                                             c.teacher, fontSize = 9.sp, lineHeight = 11.sp,
-                                                            color = color.second.copy(alpha = 0.75f)
+                                                            color = color.second.copy(alpha = 0.75f * bodyAlpha),
+                                                            maxLines = 1, overflow = TextOverflow.Ellipsis
                                                         )
                                                     }
                                                 }
-                                                if (!c.note.isNullOrEmpty()) {
+                                                if (!c.note.isNullOrEmpty() && !dimmed) {
                                                     Text(
                                                         "📝", fontSize = 9.sp,
                                                         modifier = Modifier.align(Alignment.TopEnd).padding(3.dp)
@@ -848,14 +910,18 @@ fun TimetableView(
                                 }
                             }
                         }
-                        // 整周实习/课程设计：盖在周一~周五 × 第1-8节上的大卡片
+                        // 整周实习/课程设计：盖在 周一~周五 × 第1-8节 上的大卡片。
+                        // 一周起点为周日时周一在第 2 列 → 整块右移一列，始终与 周一~周五 对齐、不乱跳
                         if (internships.isNotEmpty()) {
-                            Column(
+                            Row(
                                 Modifier
-                                    .fillMaxWidth(5f / 7f)
+                                    .fillMaxWidth()
                                     .height(slotH * 8)
                                     .padding(horizontal = 3.dp, vertical = 3.dp)
                             ) {
+                                val insStartCol = if (startSunday) 1 else 0
+                                if (insStartCol > 0) Spacer(Modifier.weight(insStartCol.toFloat()))
+                                Column(Modifier.weight(5f)) {
                                 for (c in internships) {
                                     val color = th.cardColor(c.name)
                                     Box(
@@ -882,7 +948,11 @@ fun TimetableView(
                                                 )
                                             }
                                             Spacer(Modifier.height(4.dp))
-                                            Text(c.name, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = color.second)
+                                            Text(
+                                                c.name, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                                                color = color.second, maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
                                             if (c.teacher.isNotEmpty()) {
                                                 Spacer(Modifier.height(2.dp))
                                                 Text("👨‍🏫 ${c.teacher}", fontSize = 10.sp, color = color.second.copy(alpha = 0.8f))
@@ -895,6 +965,9 @@ fun TimetableView(
                                         )
                                     }
                                 }
+                                }
+                                val insEndCol = 7 - 5 - insStartCol
+                                if (insEndCol > 0) Spacer(Modifier.weight(insEndCol.toFloat()))
                             }
                         }
                     }
@@ -904,10 +977,10 @@ fun TimetableView(
     }
 }
 
-/** 一天 11 节的布局段：课程块 + 可点击的空白块（重叠时裁剪保证不越界） */
-private data class GridSeg(val course: Course?, val start: Int, val span: Int)
+/** 一天 11 节的布局段：课程块 + 可点击的空白块（重叠时裁剪保证不越界）；dim=非本周半透明课 */
+private data class GridSeg(val course: Course?, val start: Int, val span: Int, val dim: Boolean = false)
 
-private fun daySegments(list: List<Course>): List<GridSeg> {
+private fun daySegments(list: List<Course>, sub: List<Course> = emptyList()): List<GridSeg> {
     val segs = mutableListOf<GridSeg>()
     var cursor = 1
     for (c in list.sortedBy { it.startPeriod }) {
@@ -919,27 +992,28 @@ private fun daySegments(list: List<Course>): List<GridSeg> {
         cursor = end + 1
     }
     if (cursor <= 11) segs.add(GridSeg(null, cursor, 11 - cursor + 1))
-    return segs
-}
-
-/** 马卡龙配色：浅色底 + 同系深色字，按课名稳定取色 */
-private val MACARON_COLORS = listOf(
-    Color(0xFFFFD6E0) to Color(0xFFB44D62), // 草莓粉
-    Color(0xFFDDE8C2) to Color(0xFF71812F), // 抹茶
-    Color(0xFFFFEBB8) to Color(0xFFA87E1D), // 奶黄
-    Color(0xFFE4D7F9) to Color(0xFF7B5EA7), // 香芋紫
-    Color(0xFFCDE6F8) to Color(0xFF4A7FB5), // 海盐蓝
-    Color(0xFFFFDCC8) to Color(0xFFC4693B), // 蜜桃橘
-    Color(0xFFC9EBDD) to Color(0xFF2E8B6E), // 薄荷绿
-    Color(0xFFFFE0F0) to Color(0xFFC2558F), // 棉花糖粉
-    Color(0xFFF2E3C6) to Color(0xFF8A6B3D), // 焦糖
-    Color(0xFFD8E0F0) to Color(0xFF5B6FA8)  // 雾霭蓝
-)
-
-fun macaronColor(name: String): Pair<Color, Color> {
-    var h = 0
-    for (ch in name) h = h * 31 + ch.code
-    return MACARON_COLORS[((h % MACARON_COLORS.size) + MACARON_COLORS.size) % MACARON_COLORS.size]
+    if (sub.isEmpty()) return segs
+    // 非本周课（半透明）：只填进本周课没占用的空段，不与本周课重叠
+    val subs = sub.sortedBy { it.startPeriod }
+    val filled = mutableListOf<GridSeg>()
+    for (seg in segs) {
+        if (seg.course == null) {
+            val segEnd = seg.start + seg.span - 1
+            val hit = subs.firstOrNull { it.endPeriod >= seg.start && it.startPeriod <= segEnd }
+            if (hit != null) {
+                val s = maxOf(hit.startPeriod, seg.start)
+                val e = minOf(hit.endPeriod, segEnd)
+                if (s <= e) {
+                    if (s > seg.start) filled.add(GridSeg(null, seg.start, s - seg.start))
+                    filled.add(GridSeg(hit, s, e - s + 1, dim = true))
+                    if (e < segEnd) filled.add(GridSeg(null, e + 1, segEnd - e))
+                    continue
+                }
+            }
+        }
+        filled.add(seg)
+    }
+    return filled
 }
 
 /** 空白格点开的"手动添加课程"对话框：星期/起始节次已按点按位置预填 */
@@ -1040,6 +1114,17 @@ fun weekOfDate(termStartMonday: String, date: LocalDate, maxWeek: Int): Int = tr
     1
 }
 
+/**
+ * 日期条"天序号"(可含小数) → 课表 pager 的 (page, pageOffsetFraction)。
+ * page 夹在 0..maxPage、frac 夹在 ±0.5 内，保证 PagerState.scrollToPage 不会因越界/非法偏移而抛异常。
+ */
+fun pagerPosFromDay(d: Float, dayIndexBase: Int, maxPage: Int): Pair<Int, Float> {
+    val p = ((d - dayIndexBase) / 7f).coerceIn(0f, maxPage.toFloat())
+    val page = Math.round(p).coerceIn(0, maxPage)
+    val frac = (p - page).coerceIn(-0.49f, 0.49f)
+    return page to frac
+}
+
 private val DAY_SHORT = listOf("一", "二", "三", "四", "五", "六", "日")
 
 /** 某教学周 7 天的日期（周一~周日），解析失败返回 null 列表 */
@@ -1051,15 +1136,22 @@ fun weekDates(startMonday: String, week: Int): List<LocalDate?> = try {
     List(7) { null }
 }
 
-/** 当前时间是否正处于第 p 节（今天高亮左列用） */
-fun nowPeriod(campus: String, p: Int): Boolean {
-    val t = CampusTimes.times(campus)[p] ?: return false
-    return try {
-        val now = LocalTime.now()
-        !now.isBefore(LocalTime.parse(t.first)) && now.isBefore(LocalTime.parse(t.second))
+/** 当前时间正处在第几节（今天高亮左列用）；不在任何一节课内返回 -1。整列只算一次 */
+fun nowPeriodIndex(campus: String): Int {
+    val times = CampusTimes.times(campus)
+    val now = try {
+        LocalTime.now()
     } catch (e: Exception) {
-        false
+        return -1
     }
+    for (p in 1..11) {
+        val t = times[p] ?: continue
+        try {
+            if (!now.isBefore(LocalTime.parse(t.first)) && now.isBefore(LocalTime.parse(t.second))) return p
+        } catch (e: Exception) {
+        }
+    }
+    return -1
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1086,6 +1178,7 @@ fun SettingsDialog(
     var invert by remember { mutableStateOf(Repository.invert) }
     var startSunday by remember { mutableStateOf(Repository.weekStartSunday) }
     var checkUp by remember { mutableStateOf(Repository.checkUpdate) }
+    var showOther by remember { mutableStateOf(Repository.showOtherWeekCourses) }
 
     MacDialog(color = th.surface, onDismissRequest = onDone) { close ->
         Column {
@@ -1175,11 +1268,59 @@ fun SettingsDialog(
                     Spacer(Modifier.width(8.dp))
                     Text("反色（在当前模式上翻转明暗）", fontSize = 13.sp, color = th.textPrimary)
                 }
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(showOther, { showOther = it })
+                    Text("显示非本周课程（半透明）", fontSize = 13.sp, color = th.textPrimary)
+                }
 
                 SectionTitle("更新", th.accent)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checkUp, { checkUp = it })
                     Text("打开时后台检查新版本（GitHub）", fontSize = 13.sp, color = th.textPrimary)
+                }
+                Spacer(Modifier.height(6.dp))
+                // 手动检查：到 GitHub 搜索最新 Release，有新版直接给下载入口
+                var checking by remember { mutableStateOf(false) }
+                var checkResult by remember { mutableStateOf<List<String>?>(null) } // [版本, 链接] 或 ["LATEST"] 或 ["FAIL"]
+                val scope = rememberCoroutineScope()
+                OutlinedButton(
+                    enabled = !checking,
+                    onClick = {
+                        checking = true
+                        checkResult = null
+                        scope.launch {
+                            val remote = withContext(Dispatchers.IO) { MainActivity.fetchLatestRelease() }
+                            checking = false
+                            checkResult = when {
+                                remote == null -> listOf("FAIL")
+                                MainActivity.isNewerVersion(
+                                    remote.first, MainActivity.currentVersionName(context)
+                                ) -> listOf(remote.first, remote.second)
+                                else -> listOf("LATEST")
+                            }
+                        }
+                    }
+                ) { Text(if (checking) "正在检查…" else "立即检查更新", fontSize = 13.sp) }
+                checkResult?.let { r ->
+                    Spacer(Modifier.height(4.dp))
+                    when (r[0]) {
+                        "LATEST" -> Text(
+                            "✓ 已是最新版本 v${MainActivity.currentVersionName(context)}",
+                            fontSize = 12.sp, color = th.textSecondary
+                        )
+                        "FAIL" -> Text(
+                            "检查失败（网络连不上 GitHub，稍后再试）",
+                            fontSize = 12.sp, color = th.textSecondary
+                        )
+                        else -> Text(
+                            "⬇️ 发现新版本 v${r[0]}，点击下载安装包",
+                            fontSize = 13.sp, fontWeight = FontWeight.Medium, color = th.accent,
+                            modifier = Modifier
+                                .clickable { openUrl(context, r[1]) }
+                                .padding(vertical = 2.dp)
+                        )
+                    }
                 }
 
                 SectionTitle("学期", th.accent)
@@ -1247,6 +1388,7 @@ fun SettingsDialog(
                     Repository.invert = invert
                     Repository.weekStartSunday = startSunday
                     Repository.checkUpdate = checkUp
+                    Repository.showOtherWeekCourses = showOther
                     Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
                     close()
                 }) { Text("保存") }
@@ -1265,8 +1407,12 @@ fun InfoRow(icon: String, label: String, value: String, th: AppColors) {
     ) {
         Text(icon, fontSize = 13.sp)
         Spacer(Modifier.width(8.dp))
-        Text(label, fontSize = 11.sp, color = th.textSecondary, modifier = Modifier.width(36.dp))
-        Text(value, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = th.textPrimary)
+        Text(label, fontSize = 11.sp, color = th.textSecondary, modifier = Modifier.width(38.dp))
+        Text(
+            value, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = th.textPrimary,
+            maxLines = 2, overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
     }
 }
 
@@ -1285,9 +1431,9 @@ fun PeriodRows(sel: Course, sameName: List<Course>, campus: String, th: AppColor
         Spacer(Modifier.width(8.dp))
         Text(
             "节次", fontSize = 11.sp, color = th.textSecondary,
-            modifier = Modifier.width(36.dp).padding(top = 2.dp)
+            modifier = Modifier.width(38.dp).padding(top = 2.dp)
         )
-        Column {
+        Column(Modifier.weight(1f)) {
             sameName.forEach { x ->
                 val t1 = x.startTime.ifEmpty { times[x.startPeriod]?.first ?: "" }
                 val t2 = x.endTime.ifEmpty { times[x.endPeriod]?.second ?: "" }
@@ -1307,7 +1453,7 @@ fun PeriodRows(sel: Course, sameName: List<Course>, campus: String, th: AppColor
                     Text(
                         "${dayName(x.day)} $span" +
                                 if (t1.isNotEmpty() && t2.isNotEmpty()) " · $t1-$t2" else "",
-                        fontSize = 14.sp,
+                        fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
                         color = th.textPrimary
                     )
@@ -1351,7 +1497,7 @@ fun TutorialDialog(th: AppColors, onDone: () -> Unit) {
                     "🔝 顶栏按钮" to "从左到右：课表/列表视图切换、切换校区、手动更新课表、设置。",
                     "🎨 设置" to "4 套色系 + 自定义色相、深色模式、反色、一周起点、学期第一周日期；设置底部可随时重新打开本教程。",
                     "🔄 自动更新" to "在设置里保存账号密码后，打开 App 会自动同步教务最新课表；同步失败不影响已保存的课表。手动加的课会被教务数据覆盖。",
-                    "⬇️ 检查更新" to "打开 App 时后台访问 GitHub 检查新版本（可在设置里关闭），发现新版点顶部横条即可下载。"
+                    "⬇️ 检查更新" to "打开 App 时后台访问 GitHub 检查新版本（设置里可关闭，也可随时手动检查），发现新版点顶部横条或设置里的下载入口即可。"
                 ).forEachIndexed { i, (title, desc) ->
                     if (i > 0) Spacer(Modifier.height(9.dp))
                     Text(title, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = th.textPrimary)

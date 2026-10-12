@@ -128,6 +128,29 @@ class ParserRealDataTest {
     }
 
     @Test
+    fun parsePersonalCenterTableKeepsFieldsSeparate() {
+        // 个人中心课表页（mainV_index_loadkb）：卡片名被服务端截断、悬停浮层里有"学分：X"。
+        // 曾出现：两个相邻 span 被拼成一行，"学分：201~02~03节" 混进了「教室」字段。
+        val r = JwxtParser.parseHtml(loadKbHtml())
+        assertTrue("个人中心课表也应能解析", r != null)
+        r!!
+        assertTrue("应解析出课程", r.courses.isNotEmpty())
+        assertTrue(
+            "教室不应混进学分: " + r.courses.filter { it.location.contains("学分") },
+            r.courses.none { it.location.contains("学分") }
+        )
+        assertTrue(
+            "课名不应被截断成 ...: " + r.courses.filter { it.name.endsWith("...") },
+            r.courses.none { it.name.endsWith("...") }
+        )
+        val plc = r.courses.first { it.name == "电气控制与PLC" }
+        assertTrue("教室应含 50320，实际=" + plc.location, plc.location.contains("50320"))
+        assertEquals(1, plc.startPeriod)
+        assertEquals(3, plc.endPeriod)
+        assertEquals(listOf(3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 18), plc.weeks)
+    }
+
+    @Test
     fun parseEmptyPageReturnsNull() {
         assertEquals(null, JwxtParser.parseHtml("<html><body><p>无课表</p></body></html>"))
     }

@@ -211,7 +211,7 @@ object JwxtParser {
     private fun parseCell(el: Element): Pair<CellInfo, Pair<Int?, Int?>>? {
         val lines = el.html()
             .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
-            .replace(Regex("</(div|p|td|li)>", RegexOption.IGNORE_CASE), "\n")
+            .replace(Regex("</(div|p|td|li|span|font|a|b|strong|i|em)>", RegexOption.IGNORE_CASE), "\n")
             .replace(Regex("<[^>]+>"), "")
             .replace("&nbsp;", " ").replace("&amp;", "&")
             // 强智新版格子内有 kbcontent1/kbcontent 两个隐藏 div，内容重复；
@@ -221,6 +221,9 @@ object JwxtParser {
             // "(讲课:16)"/"(舞龙)"等括号备注都不是课程字段，直接丢弃
             .filter {
                 !(it.startsWith("通知单编号") || it.startsWith("班级") || it.startsWith("备注") ||
+                        it.startsWith("学分") ||
+                        // 个人中心课表页的卡片名会被服务端截断成 "电气控制与..."，丢弃这种残名
+                        Regex("[.．…]{2,}$").containsMatchIn(it) ||
                         Regex("^[-—=_]{3,}").containsMatchIn(it) ||
                         Regex("^\\(.*\\)$").matches(it))
             }
@@ -233,10 +236,14 @@ object JwxtParser {
         for (i in lines.indices) {
             val l = lines[i]
             val pl = parsePeriodList(l)
-            if (pl != null && periodList == null) {
-                periodList = pl
-                val wk = parseWeeks(l)
-                if (wk.isNotEmpty() && c.weeks.isEmpty()) c.weeks = wk
+            if (pl != null) {
+                // 一行里就是节次（可能还带周次）；消费掉，避免"01~02~03节"之类漏进课名/教室
+                if (periodList == null) {
+                    periodList = pl
+                    // 先剥掉 "01~02~03小节" 再取周次，避免小节号混进周次
+                    val wk = parseWeeks(l.replace(Regex("\\d+(?:\\s*[-~—–]\\s*\\d+)+\\s*小节"), " "))
+                    if (wk.isNotEmpty() && c.weeks.isEmpty()) c.weeks = wk
+                }
                 used[i] = true; continue
             }
             if (isWeekLine(l)) {

@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -339,6 +340,7 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
     var showSettings by remember { mutableStateOf(false) }
     var gridView by remember { mutableStateOf(true) }
     var detail by remember { mutableStateOf<Course?>(null) }
+    var editTarget by remember { mutableStateOf<Course?>(null) }
     var addReq by remember { mutableStateOf<Triple<Int, Int, Int>?>(null) } // 星期,节次,查看的周
     var showTutorial by remember { mutableStateOf(Repository.showTutorial) }
 
@@ -373,6 +375,8 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
         else
             lightColorScheme(primary = th.accent, background = th.bg, surface = th.surface)
     ) {
+    // 任何设置 / 数据变化都让整棵界面重新读一遍（等效"重启"，但不会闪退、不丢画面）
+    key(refreshState.value) {
     Scaffold(
         containerColor = th.bg,
         topBar = {
@@ -589,10 +593,29 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                         }
                     ) { Text("保存", color = if (noteDirty) th.accent else th.textSecondary) }
                     Spacer(Modifier.width(4.dp))
+                    TextButton(onClick = { editTarget = c }) {
+                        Text("编辑", color = th.accent)
+                    }
+                    Spacer(Modifier.width(4.dp))
                     TextButton(onClick = close) { Text("关闭", color = th.textSecondary) }
                 }
             }
         }
+    }
+
+    // 编辑课程：可改节次 / 周次，并选择只改"本周"还是"整个学期"
+    editTarget?.let { editing ->
+        val cur = schedule.courses.firstOrNull { it.id == editing.id } ?: editing
+        EditCourseDialog(
+            course = cur, currentWeek = currentWeek, th = th,
+            onDismiss = { editTarget = null },
+            onConfirm = { startP, endP, weeks, onlyThisWeek ->
+                Repository.editCourse(cur, startP, endP, weeks, onlyThisWeek, currentWeek)
+                schedule = Repository.loadSchedule()
+                editTarget = null
+                detail = null
+            }
+        )
     }
 
     addReq?.let { (d, p, w) ->
@@ -610,6 +633,7 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
     // 放在最后组合：弹窗窗口按加入顺序叠放，教程才能盖住设置弹窗
     if (showTutorial) {
         TutorialDialog(th = th, onDone = { showTutorial = false })
+    }
     }
     }
 }
@@ -823,7 +847,8 @@ fun TimetableView(
                 }
                 val byDay = inWeek.groupBy { it.day }
                 val othersByDay = otherWeek.groupBy { it.day }
-                val internships = inWeek.filter { it.day == 0 }
+                val interns = inWeek.filter { it.isIntern }
+                val labs = inWeek.filter { it.isLab }
                 val dates = weekDates(schedule.termStartMonday, week)
                 Column(Modifier.fillMaxSize().verticalScroll(vs)) {
                     Box(Modifier.fillMaxWidth()) {
@@ -934,7 +959,7 @@ fun TimetableView(
                         }
                         // 整周实习/课程设计：盖在 周一~周五 × 第1-8节 上的大卡片。
                         // 一周起点为周日时周一在第 2 列 → 整块右移一列，始终与 周一~周五 对齐、不乱跳
-                        if (internships.isNotEmpty()) {
+                        if (interns.isNotEmpty()) {
                             Row(
                                 Modifier
                                     .fillMaxWidth()
@@ -944,7 +969,7 @@ fun TimetableView(
                                 val insStartCol = if (startSunday) 1 else 0
                                 if (insStartCol > 0) Spacer(Modifier.weight(insStartCol.toFloat()))
                                 Column(Modifier.weight(5f)) {
-                                for (c in internships) {
+                                for (c in interns) {
                                     val color = th.cardColor(c.name)
                                     Box(
                                         Modifier
@@ -990,6 +1015,52 @@ fun TimetableView(
                                 }
                                 val insEndCol = 7 - 5 - insStartCol
                                 if (insEndCol > 0) Spacer(Modifier.weight(insEndCol.toFloat()))
+                            }
+                        }
+                        // 实验安排：不加盖大卡片，只在第 11 节下方单独加一行（左列写"实验"，内容跨周一~周五）
+                        if (labs.isNotEmpty()) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(slotH)
+                                    .padding(vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(Modifier.width(46.dp), contentAlignment = Alignment.Center) {
+                                    Text(
+                                        "实验", fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                                        color = th.textSecondary
+                                    )
+                                }
+                                for ((i, d) in dayCols.withIndex()) {
+                                    val lab = labs.firstOrNull { it.day == d }
+                                    Box(Modifier.weight(1f).fillMaxHeight().padding(horizontal = 1.dp)) {
+                                        if (lab != null) {
+                                            val color = th.cardColor(lab.name)
+                                            Column(
+                                                Modifier
+                                                    .fillMaxSize()
+                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .background(color.first)
+                                                    .clickable { onCourseClick(lab) }
+                                                    .padding(horizontal = 5.dp, vertical = 4.dp)
+                                            ) {
+                                                Text(
+                                                    lab.name, fontSize = 9.5.sp, lineHeight = 11.sp,
+                                                    fontWeight = FontWeight.SemiBold, color = color.second,
+                                                    maxLines = 2, overflow = TextOverflow.Ellipsis
+                                                )
+                                                if (lab.teacher.isNotEmpty()) {
+                                                    Text(
+                                                        lab.teacher, fontSize = 8.5.sp, lineHeight = 10.sp,
+                                                        color = color.second.copy(alpha = 0.75f),
+                                                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -1121,6 +1192,105 @@ fun AddCourseDialog(
                             endPeriod = endP,
                             weeks = weeks
                         )
+                    )
+                }) { Text("保存") }
+            }
+        }
+    }
+}
+
+/** 把周次列表压成 "1-16,18" 这样的文本（编辑框用） */
+fun weeksToText(weeks: List<Int>): String {
+    if (weeks.isEmpty()) return ""
+    val w = weeks.sorted()
+    val ranges = mutableListOf<Pair<Int, Int>>()
+    var s = w[0]; var prev = w[0]
+    for (i in 1 until w.size) {
+        if (w[i] == prev + 1) prev = w[i] else { ranges.add(s to prev); s = w[i]; prev = w[i] }
+    }
+    ranges.add(s to prev)
+    return ranges.joinToString(",") { (a, b) -> if (a == b) "$a" else "$a-$b" }
+}
+
+/** 解析 "1-16,18" 这样的周次文本 → [1..16,18] */
+fun parseWeeksText(text: String): List<Int> {
+    val out = sortedSetOf<Int>()
+    for (m in Regex("(\\d+)\\s*[-~—–]\\s*(\\d+)|(\\d+)").findAll(text)) {
+        val g = m.groupValues
+        if (g[1].isNotEmpty()) {
+            var a = g[1].toIntOrNull() ?: continue
+            var b = g[2].toIntOrNull() ?: continue
+            if (a > b) { val t = a; a = b; b = t }
+            for (i in a..b) if (i in 1..53) out.add(i)
+        } else {
+            g[3].toIntOrNull()?.let { if (it in 1..53) out.add(it) }
+        }
+    }
+    return out.toList()
+}
+
+/** 编辑课程：改节次 / 周次，可选"整个学期"或"仅本周" */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun EditCourseDialog(
+    course: Course,
+    currentWeek: Int,
+    th: AppColors,
+    onDismiss: () -> Unit,
+    onConfirm: (startP: Int, endP: Int, weeks: List<Int>, onlyThisWeek: Boolean) -> Unit
+) {
+    var startP by remember { mutableStateOf(course.startPeriod) }
+    var endP by remember { mutableStateOf(course.endPeriod) }
+    var weeksText by remember { mutableStateOf(weeksToText(course.weeks)) }
+    var onlyThisWeek by remember { mutableStateOf(false) }
+    val valid = startP in 1..11 && endP in startP..11
+
+    MacDialog(color = th.surface, onDismissRequest = onDismiss) { close ->
+        Column {
+            Text("编辑课程", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = th.textPrimary)
+            Text(course.name, fontSize = 12.sp, color = th.textSecondary)
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("第", fontSize = 13.sp, color = th.textSecondary)
+                OutlinedTextField(
+                    startP.toString(),
+                    { s -> s.filter { it.isDigit() }.take(2).toIntOrNull()?.let { if (it in 1..11) startP = it } },
+                    singleLine = true, modifier = Modifier.width(58.dp).padding(horizontal = 4.dp)
+                )
+                Text("节 到", fontSize = 13.sp, color = th.textSecondary)
+                OutlinedTextField(
+                    endP.toString(),
+                    { s -> s.filter { it.isDigit() }.take(2).toIntOrNull()?.let { if (it in 1..11) endP = it } },
+                    singleLine = true, modifier = Modifier.width(58.dp).padding(horizontal = 4.dp)
+                )
+                Text("节", fontSize = 13.sp, color = th.textSecondary)
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                FilterChip(selected = !onlyThisWeek, onClick = { onlyThisWeek = false },
+                    label = { Text("整个学期", fontSize = 12.sp, maxLines = 1) })
+                FilterChip(selected = onlyThisWeek, onClick = { onlyThisWeek = true },
+                    label = { Text("仅第 $currentWeek 周", fontSize = 12.sp, maxLines = 1) })
+            }
+            Spacer(Modifier.height(8.dp))
+            if (!onlyThisWeek) {
+                OutlinedTextField(
+                    weeksText, { weeksText = it },
+                    label = { Text("周次（如 1-16,18）") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                Text("只改第 $currentWeek 周，其余周次不变。", fontSize = 11.sp, color = th.textSecondary)
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = close) { Text("取消", color = th.textSecondary) }
+                Spacer(Modifier.width(4.dp))
+                Button(enabled = valid, onClick = {
+                    onConfirm(
+                        startP, endP,
+                        if (onlyThisWeek) listOf(currentWeek) else parseWeeksText(weeksText),
+                        onlyThisWeek
                     )
                 }) { Text("保存") }
             }

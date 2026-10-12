@@ -189,7 +189,9 @@ object JwxtParser {
                     day = 0,
                     startPeriod = 1,
                     endPeriod = 11,
-                    weeks = weeks
+                    weeks = weeks,
+                    // 区分实习/实验：名字里带"实验"→实验（第11节下方单独一行）；否则当实习（周一到周五大卡片）
+                    kind = if (name.contains("实验")) "lab" else "intern"
                 )
             )
         }

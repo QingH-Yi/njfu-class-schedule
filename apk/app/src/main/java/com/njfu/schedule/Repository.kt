@@ -63,7 +63,8 @@ object Repository {
                             startTime = jStr(r, "startTime"),
                             endTime = jStr(r, "endTime"),
                             note = jStr(r, "note"),
-                            credit = jStr(r, "credit")
+                            credit = jStr(r, "credit"),
+                            kind = jStr(r, "kind")
                         )
                     )
                 }
@@ -123,6 +124,40 @@ object Repository {
         saveSchedule(cur.copy(courses = cur.courses.map {
             if (it.id == id) it.copy(note = note, credit = credit) else it
         }))
+    }
+
+    /**
+     * 编辑课程的节次 / 周次。
+     * onlyThisWeek=false：整学期都改（直接改这门课）。
+     * onlyThisWeek=true ：只改本周 —— 把这周从原课周次里拆出来，单独生成一条改了节次的课。
+     */
+    fun editCourse(course: Course, startP: Int, endP: Int, weeks: List<Int>, onlyThisWeek: Boolean, currentWeek: Int) {
+        val cur = loadSchedule()
+        val s = startP.coerceIn(1, 11)
+        val e = endP.coerceIn(s, 11)
+        val idx = cur.courses.indexOfFirst { it.id == course.id }
+        if (idx < 0) return
+        val orig = cur.courses[idx]
+        val list = cur.courses.toMutableList()
+        if (onlyThisWeek) {
+            // weeks 为空 = 全学期，视作 1..53
+            val origWeeks = if (orig.weeks.isEmpty()) (1..53).toList() else orig.weeks
+            val remain = origWeeks.filter { it != currentWeek }
+            if (remain.isEmpty()) {
+                list[idx] = orig.copy(startPeriod = s, endPeriod = e, weeks = listOf(currentWeek))
+            } else {
+                list[idx] = orig.copy(weeks = remain.sorted())
+                list.add(
+                    orig.copy(
+                        id = UUID.randomUUID().toString().take(8),
+                        startPeriod = s, endPeriod = e, weeks = listOf(currentWeek)
+                    )
+                )
+            }
+        } else {
+            list[idx] = orig.copy(startPeriod = s, endPeriod = e, weeks = weeks.filter { it in 1..53 }.distinct().sorted())
+        }
+        saveSchedule(cur.copy(courses = list))
     }
 
     /** 学分三轮抓取合并：仅采纳三轮结果完全一致的课名（防爬错） */

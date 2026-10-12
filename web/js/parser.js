@@ -349,7 +349,9 @@
       seen[key2] = true;
       courses.push({
         name: name2, teacher: teachers2, location: '', day: 0,
-        startPeriod: 1, endPeriod: 11, weeks: weeks2, startTime: '', endTime: ''
+        startPeriod: 1, endPeriod: 11, weeks: weeks2, startTime: '', endTime: '',
+        // 区分实习/实验：名字带"实验"→实验（第11节下方一行）；否则当实习（周一到周五大卡片）
+        kind: /实验/.test(name2) ? 'lab' : 'intern'
       });
     }
 

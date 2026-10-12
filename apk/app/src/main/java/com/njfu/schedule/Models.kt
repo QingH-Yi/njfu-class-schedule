@@ -8,15 +8,20 @@ data class Course(
     val name: String,
     val teacher: String,
     val location: String,
-    val day: Int,          // 1=周一 … 7=周日，0=整周实习/课程设计
+    val day: Int,          // 1=周一 … 7=周日，0=整周（实习/实验，见 kind）
     val startPeriod: Int,
     val endPeriod: Int,
     val weeks: List<Int>,  // 上课周次
     val startTime: String = "",
     val endTime: String = "",
     val note: String? = null,  // 用户备忘录（仅存本机；旧数据无此字段，Gson 会填 null）
-    val credit: String? = null // 学分（用户自填）
-)
+    val credit: String? = null, // 学分（用户自填）
+    // day=0 时区分："" 或 "intern"=实习（盖周一~周五第1-8节大卡片）；"lab"=实验（第11节下方加一行）
+    val kind: String = ""
+) {
+    val isIntern: Boolean get() = day == 0 && kind != "lab"
+    val isLab: Boolean get() = day == 0 && kind == "lab"
+}
 
 /** 一学期课表 + 元信息 */
 data class Schedule(

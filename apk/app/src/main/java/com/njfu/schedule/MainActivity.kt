@@ -959,9 +959,9 @@ fun TimetableView(
                                 }
                             }
                         }
-                        // 最下方一行：整周安排（实习/实验/课程设计），横跨 7 天、高度略低；
-                        // 用户给它设了具体时间后，它就会变成正常课、移到上面网格里
-                        val weekBottom = inWeek.filter { it.day == 0 }
+                        // 最底部固定一行：存放实习/实验/课程设计等"整周安排"。
+                        // 与周次、时间、星期都无关——一直都在（有就显示），放在第 11 节网格的下方
+                        val weekBottom = schedule.courses.filter { it.day == 0 }
                         if (weekBottom.isNotEmpty()) {
                             Row(
                                 Modifier
@@ -993,13 +993,11 @@ fun TimetableView(
                                                 fontWeight = FontWeight.SemiBold, color = color.second,
                                                 maxLines = 2, overflow = TextOverflow.Ellipsis
                                             )
-                                            if (b.teacher.isNotEmpty()) {
-                                                Text(
-                                                    b.teacher, fontSize = 8.5.sp, lineHeight = 10.sp,
-                                                    color = color.second.copy(alpha = 0.75f),
-                                                    maxLines = 1, overflow = TextOverflow.Ellipsis
-                                                )
-                                            }
+                                            Text(
+                                                weekLabel(b.weeks), fontSize = 8.sp, lineHeight = 9.sp,
+                                                color = color.second.copy(alpha = 0.7f),
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis
+                                            )
                                         }
                                     }
                                 }

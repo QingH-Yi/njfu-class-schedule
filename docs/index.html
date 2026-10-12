@@ -136,6 +136,27 @@
     background:var(--mint);border-radius:999px;padding:8px 18px;
   }
 
+  /* 下载区 */
+  .download{padding:44px 0 6px}
+  .dl-card{
+    background:var(--cream);
+    border:2px solid var(--line);
+    border-radius:var(--radius);
+    box-shadow:0 18px 40px -28px rgba(107,88,76,.55);
+    padding:34px 34px 30px;
+    display:grid;grid-template-columns:1.2fr .8fr;gap:30px;align-items:center;
+  }
+  .dl-sub{margin-bottom:18px;max-width:46ch}
+  .dl-meta{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:10px 26px}
+  .dl-meta li{font-size:14.5px;font-weight:600;color:var(--ink)}
+  .dl-meta span{
+    display:inline-block;margin-right:8px;font-weight:500;font-size:12.5px;
+    color:var(--ink-2);background:var(--paper);
+    border:1px solid var(--line);border-radius:999px;padding:2px 10px;
+  }
+  .dl-actions{display:flex;flex-direction:column;gap:12px;align-items:stretch}
+  .dl-btn{justify-content:center;width:100%}
+
   footer{background:rgba(255,247,238,.68);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-top:2px solid var(--line);padding:34px 0 60px;margin-top:40px}
   .foot-grid{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center}
   .who{font-size:15px}
@@ -152,6 +173,8 @@
     .hero-grid{grid-template-columns:1fr;gap:34px}
     .board{transform:rotate(-1deg)}
     .features{grid-template-columns:1fr}
+    .dl-card{grid-template-columns:1fr;padding:26px 22px 24px;gap:22px}
+    .dl-meta{gap:8px 16px}
   }
   @media (prefers-reduced-motion: reduce){
     .btn{transition:none}
@@ -167,12 +190,15 @@
       <h1 class="display">南林课程表</h1>
       <p class="pitch">打开 App，自动登录教务系统，把最新课表同步到手机。三校区作息、教学周、教室老师，都在手边。</p>
       <div class="cta">
-        <a class="btn btn-primary" href="https://github.com/wangbq666/njfu-class-schedule/releases/latest">
-          ⬇ 下载安卓版
+        <a class="btn btn-primary" id="btn-download-top"
+           href="https://github.com/wangbq666/njfu-class-schedule/releases/download/v2.0/njfu-class-schedule-v2.0-release.apk"
+           download>
+          ⬇ 直接下载 APK · v2.0
         </a>
+        <a class="btn btn-ghost" href="https://github.com/wangbq666/njfu-class-schedule/releases/tag/v2.0">更新日志</a>
         <a class="btn btn-ghost" href="https://github.com/wangbq666/njfu-class-schedule">查看源码</a>
       </div>
-      <p class="free">免费 · 约 1.6&nbsp;MB · 需要 Android 8.0 以上</p>
+      <p class="free">免费开源 · 约 1.6&nbsp;MB · 需要 Android 8.0 以上 · 当前版本 v2.0（2026-10-12）</p>
     </div>
 
     <div class="board" aria-hidden="true">
@@ -228,6 +254,36 @@
       <span class="badge">🔒 账号密码只保存在你本机，不上传任何服务器</span>
     </div>
   </section>
+
+  <section class="download" id="download">
+    <div class="wrap">
+      <div class="dl-card">
+        <div class="dl-info">
+          <h2 class="display">下载南林课程表</h2>
+          <p class="sub dl-sub">点击按钮直接下载安装包（APK），下载完成后打开安装即可；覆盖安装会自动清理旧版本残留数据。</p>
+          <ul class="dl-meta">
+            <li><span>版本</span>v2.0</li>
+            <li><span>更新</span>2026-10-12</li>
+            <li><span>大小</span>1.53&nbsp;MB</li>
+            <li><span>要求</span>Android 8.0+</li>
+          </ul>
+        </div>
+        <div class="dl-actions">
+          <a class="btn btn-primary dl-btn" id="btn-download"
+             href="https://github.com/wangbq666/njfu-class-schedule/releases/download/v2.0/njfu-class-schedule-v2.0-release.apk"
+             download>
+            ⬇ 下载 APK（v2.0）
+          </a>
+          <a class="btn btn-ghost dl-btn" href="https://github.com/wangbq666/njfu-class-schedule/releases/tag/v2.0">
+            📋 v2.0 更新日志
+          </a>
+          <a class="btn btn-ghost dl-btn" href="https://github.com/wangbq666/njfu-class-schedule/releases">
+            📦 全部版本
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
 </main>
 
 <footer>
@@ -237,7 +293,8 @@
       <nav class="links">
         <a href="https://github.com/wangbq666">GitHub 主页</a>
         <a href="https://github.com/wangbq666/njfu-class-schedule">项目仓库</a>
-        <a href="https://github.com/wangbq666/njfu-class-schedule/releases/latest">下载最新版</a>
+        <a href="https://github.com/wangbq666/njfu-class-schedule/releases/tag/v2.0">v2.0 更新日志</a>
+        <a href="https://github.com/wangbq666/njfu-class-schedule/releases/download/v2.0/njfu-class-schedule-v2.0-release.apk">下载 APK</a>
       </nav>
     </div>
     <p class="copyright">南林课程表 · 学生个人作品，与南京林业大学官方无关。</p>

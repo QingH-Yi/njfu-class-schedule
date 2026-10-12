@@ -832,8 +832,9 @@ fun TimetableView(
                         }
                     }
                 }
-                // 左列最下方（第 12 格）：与右侧"安排"行对齐的标签
-                if (schedule.courses.any { it.day == 0 }) {
+                // 左列最下方（第 12 格）：与右侧"安排"行对齐的标签。
+                // 只在"当前查看的这一周确实有整周安排"时才显示（与右侧一致，没有就不占位）
+                if (schedule.courses.any { it.day == 0 && (it.weeks.isEmpty() || viewedWeek in it.weeks) }) {
                     Box(Modifier.height(slotH * 0.78f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                         Text("安排", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = th.textSecondary)
                     }
@@ -968,10 +969,16 @@ fun TimetableView(
                                 }
                             }
                         }
-                        // 最底部固定一行：存放实习/实验/课程设计等"整周安排"。
-                        // 与周次、时间、星期都无关——一直都在（有就显示），放在第 11 节网格的下方
-                        val weekBottom = schedule.courses.filter { it.day == 0 }
+                        // 最底部一行：整周安排（实习/实验/课程设计）。
+                        // 只显示"当前查看的这一周"确实要上的（周次命中），没有就整行不显示；
+                        // 内容横跨【周一~周五】这 5 列，与上面网格的列严格对齐（切换周一/周日起点也跟着移）
+                        val weekBottom = schedule.courses.filter {
+                            it.day == 0 && (it.weeks.isEmpty() || week in it.weeks)
+                        }
                         if (weekBottom.isNotEmpty()) {
+                            // 周日为起点时：周日占第 1 列 → 周一到周五整体右移 1 列，周六收尾
+                            val leadCols = if (startSunday) 1f else 0f
+                            val trailCols = if (startSunday) 1f else 2f
                             Row(
                                 Modifier
                                     .fillMaxWidth()
@@ -980,8 +987,9 @@ fun TimetableView(
                                     .testTag("bottomRow"),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
+                                if (leadCols > 0f) Spacer(Modifier.weight(leadCols))
                                 Row(
-                                    Modifier.weight(1f).fillMaxHeight(),
+                                    Modifier.weight(5f).fillMaxHeight().testTag("bottomCards"),
                                     horizontalArrangement = Arrangement.spacedBy(3.dp)
                                 ) {
                                     for (b in weekBottom) {
@@ -1008,6 +1016,7 @@ fun TimetableView(
                                         }
                                     }
                                 }
+                                if (trailCols > 0f) Spacer(Modifier.weight(trailCols))
                             }
                         }
                     }

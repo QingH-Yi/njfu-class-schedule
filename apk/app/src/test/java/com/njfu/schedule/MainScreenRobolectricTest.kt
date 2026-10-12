@@ -146,6 +146,44 @@ class MainScreenRobolectricTest {
     }
 
     @Test
+    fun bottomRowHiddenInWeeksWithoutArrangement() {
+        seed()
+        // 整周实习是第 7-9 周。把"当前周"设到第 11 周：pager 只组合相邻 3 页（第 10/11/12 周），
+        // 都不含第 7-9 周 → 整行、整张卡都不该出现（选 10 周不行：相邻的第 9 周仍在 7-9 内，
+        // 离屏页会残留一个"专业实习"节点，导致 hasText 误判）。
+        Repository.weekOverride = 11
+        rule.setContent { ScheduleApp(mutableStateOf(0)) }
+        rule.waitForIdle()
+        val rows = rule.onAllNodesWithTag("bottomRow").fetchSemanticsNodes()
+            .filter { it.boundsInRoot.width > 0f && it.boundsInRoot.height > 0f }
+        assertTrue("第11周无整周安排，不该显示'安排'行", rows.isEmpty())
+        assertTrue("也不该显示'专业实习'卡片", !hasText("专业实习"))
+    }
+
+    @Test
+    @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
+    fun bottomCardsSpanMondayToFriday() {
+        seed()
+        rule.setContent { ScheduleApp(mutableStateOf(0)) }
+        rule.waitForIdle()
+        fun visible(tag: String) = rule.onAllNodesWithTag(tag).fetchSemanticsNodes()
+            .filter { it.boundsInRoot.width > 0f && it.boundsInRoot.height > 0f }
+            .minByOrNull { it.boundsInRoot.left }
+        val pager = visible("weekPager")!!
+        val cards = visible("bottomCards")!!
+        val col = pager.boundsInRoot.width / 7f
+        // 卡片区应横跨【周一~周五】5 列（起点与课表第 1 列对齐，宽度≈5/7 的课表宽）
+        assertTrue(
+            "卡片区左缘应贴着课表第1列（周一）: cards.left=${cards.boundsInRoot.left} pager.left=${pager.boundsInRoot.left}",
+            kotlin.math.abs(cards.boundsInRoot.left - pager.boundsInRoot.left) <= 2f
+        )
+        assertTrue(
+            "卡片区宽度应≈5列: cards.w=${cards.boundsInRoot.width} 5列=${col * 5}",
+            kotlin.math.abs(cards.boundsInRoot.width - col * 5) <= 4f
+        )
+    }
+
+    @Test
     fun blankCellSelectsOnTapAndAddsOnDoubleTap() {
         seed()
         rule.setContent { ScheduleApp(mutableStateOf(0)) }

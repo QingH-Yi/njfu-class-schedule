@@ -21,3 +21,6 @@ apk/app/src/test/resources/kb_loadkb.html
 
 # 成品 APK 通过 GitHub Releases 分发，不进仓库
 *.apk
+
+# 临时中转文件夹（上传用，不入库）
+待上传/

@@ -45,4 +45,4 @@ gradle assembleRelease   # 需自备签名密钥（不入库），在 app/build.
 
 ## 更新日志
 
-见 [Releases](https://github.com/wangbq666/njfu-class-schedule/releases)。
+见 [CHANGELOG.md](CHANGELOG.md)，或 [Releases](https://github.com/wangbq666/njfu-class-schedule/releases)。

@@ -62,8 +62,14 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -700,6 +706,56 @@ fun AppBackgroundImage(uri: String, dim: Int) {
     Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = a * 0.85f)))
 }
 
+/**
+ * 课程格内的文字：显示【课程名 + 教室 + 老师】。
+ * 教室：有就显示，没有（如在线课）就不显示；老师：始终显示。
+ * 字号自适应——测量各块换行后的总高度，选一个能塞进格子、又尽量大的字号，
+ * 保证课名、教室、老师都完整显示、不把某一行裁掉。
+ */
+@Composable
+fun CourseCellText(
+    name: String, location: String, teacher: String,
+    textColor: Color, bodyAlpha: Float
+) {
+    val measurer = rememberTextMeasurer()
+    val density = LocalDensity.current.density
+    BoxWithConstraints(Modifier.padding(4.dp)) {
+        val maxWpx = (maxWidth.value * density).toInt().coerceAtLeast(1)
+        val availH = maxHeight.value
+        // 从大字号往小试，选第一个能塞下"课名 + 教室 + 老师"的字号
+        val nameSizes = listOf(11f, 10.5f, 10f, 9.5f, 9f, 8.5f, 8f, 7.5f)
+        var chosenName = 7.5f
+        var chosenSub = 6.5f
+        for (ns in nameSizes) {
+            val ss = (ns - 1.5f).coerceAtLeast(6.5f)
+            fun h(text: String, sz: Float, bold: Boolean): Int = if (text.isEmpty()) 0 else measurer.measure(
+                AnnotatedString(text),
+                style = TextStyle(
+                    fontSize = sz.sp, lineHeight = (sz + 1.5f).sp,
+                    fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal
+                ),
+                constraints = androidx.compose.ui.unit.Constraints(maxWidth = maxWpx)
+            ).size.height
+            val totalDp = (h(name, ns, true) + h(location, ss, false) + h(teacher, ss, false)) / density
+            if (totalDp <= availH) { chosenName = ns; chosenSub = ss; break }
+        }
+        Column {
+            Text(
+                name, fontSize = chosenName.sp, lineHeight = (chosenName + 1.5f).sp,
+                fontWeight = FontWeight.SemiBold, color = textColor.copy(alpha = bodyAlpha)
+            )
+            if (location.isNotEmpty()) Text(
+                location, fontSize = chosenSub.sp, lineHeight = (chosenSub + 1.5f).sp,
+                color = textColor.copy(alpha = 0.82f * bodyAlpha)
+            )
+            if (teacher.isNotEmpty()) Text(
+                teacher, fontSize = chosenSub.sp, lineHeight = (chosenSub + 1.5f).sp,
+                color = textColor.copy(alpha = 0.78f * bodyAlpha)
+            )
+        }
+    }
+}
+
 @Composable
 fun CourseCard(c: Course, campus: String, th: AppColors) {
     val times = CampusTimes.times(campus)
@@ -982,27 +1038,15 @@ fun TimetableView(
                                                         )
                                                     }
                                             ) {
-                                                Column(Modifier.padding(4.dp)) {
-                                                    Text(
-                                                        c.name, fontSize = 10.sp, lineHeight = 12.sp,
-                                                        fontWeight = FontWeight.SemiBold,
-                                                        color = color.second.copy(alpha = bodyAlpha)
-                                                    )
-                                                    if (c.location.isNotEmpty()) {
-                                                        // 教室完整显示、不截断——不点进详情也能看到
-                                                        Text(
-                                                            c.location, fontSize = 9.sp, lineHeight = 11.sp,
-                                                            color = color.second.copy(alpha = 0.8f * bodyAlpha)
-                                                        )
-                                                    }
-                                                    if (c.teacher.isNotEmpty()) {
-                                                        Text(
-                                                            c.teacher, fontSize = 9.sp, lineHeight = 11.sp,
-                                                            color = color.second.copy(alpha = 0.75f * bodyAlpha),
-                                                            maxLines = 1, overflow = TextOverflow.Ellipsis
-                                                        )
-                                                    }
-                                                }
+                                                // 课程格上显示【课程名 + 教室(有就显示) + 老师】。
+                                                // 字号自适应，保证三样都完整显示、不裁掉老师。
+                                                CourseCellText(
+                                                    name = c.name,
+                                                    location = c.location,
+                                                    teacher = c.teacher,
+                                                    textColor = color.second,
+                                                    bodyAlpha = bodyAlpha
+                                                )
                                                 if (!c.note.isNullOrEmpty() && !dimmed) {
                                                     Text(
                                                         "📝", fontSize = 9.sp,
@@ -1224,10 +1268,53 @@ fun parseWeeksText(text: String): List<Int> {
     return out.toList()
 }
 
-/** 编辑课程里的可视化选时段：7 列(星期) × 11 行(节次)，可连续点选 / 拖拽，多选组合出多个时段 */
+/** 编辑课程里的可视化选时段：7 列(星期) × 11 行(节次)，可连续点选 / 拖拽，多选组合出多个时段。
+ *  右上角「放大」按钮可全屏放大选择，格子更大更好拖。 */
 @Composable
 fun PeriodPicker(selected: Set<Pair<Int, Int>>, th: AppColors, onChange: (Set<Pair<Int, Int>>) -> Unit) {
-    val cellW = 32.dp; val cellH = 20.dp
+    var enlarged by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        // 标题行 + 放大按钮
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "点选 / 拖拽选时段 · 已选 ${selected.size} 节",
+                fontSize = 11.sp, color = th.textSecondary, modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = { enlarged = true }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+                Text("⤢ 放大", fontSize = 12.sp, color = th.accent)
+            }
+        }
+        Spacer(Modifier.height(2.dp))
+        PeriodGrid(selected, th, onChange, cellW = 32.dp, cellH = 20.dp)
+    }
+    if (enlarged) {
+        // 全屏放大：格子按屏幕尺寸铺开，好拖好点
+        Dialog(onDismissRequest = { enlarged = false }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Surface(color = th.surface, shape = RoundedCornerShape(24.dp), modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                Column(Modifier.padding(16.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text("选择上课时间", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = th.textPrimary, modifier = Modifier.weight(1f))
+                        TextButton(onClick = { enlarged = false }) { Text("完成", color = th.accent, fontWeight = FontWeight.Bold) }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    // 用 BoxWithConstraints 让格子填满可用空间
+                    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+                        val cw = (maxWidth - 22.dp) / 7f
+                        val ch = (maxHeight - 20.dp) / 11f
+                        PeriodGrid(selected, th, onChange, cellW = cw, cellH = ch)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 时段网格本体（列宽/行高由调用方给定，便于普通 / 放大两种尺寸复用） */
+@Composable
+private fun PeriodGrid(
+    selected: Set<Pair<Int, Int>>, th: AppColors, onChange: (Set<Pair<Int, Int>>) -> Unit,
+    cellW: androidx.compose.ui.unit.Dp, cellH: androidx.compose.ui.unit.Dp
+) {
     // pointerInput(Unit) 不会因选中集变化重启，用这两个 holder 读最新的选中集与回调
     val latestSelected = rememberUpdatedState(selected)
     val latestOnChange = rememberUpdatedState(onChange)
@@ -1316,8 +1403,6 @@ fun PeriodPicker(selected: Set<Pair<Int, Int>>, th: AppColors, onChange: (Set<Pa
                 }
             }
         }
-        Spacer(Modifier.height(4.dp))
-        Text("点选 / 拖拽选时段（可多选组合）· 已选 ${selected.size} 节", fontSize = 11.sp, color = th.textSecondary)
     }
 }
 
@@ -1521,28 +1606,31 @@ fun SettingsDialog(
                     .heightIn(max = 560.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                Text("设置", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = th.textPrimary)
+                Text("设置", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = th.textPrimary)
 
-                SectionTitle("账号与导入", th.accent)
-                OutlinedTextField(user, { user = it },
-                    label = { Text("学号 / 账号") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(pass, { pass = it },
-                    label = { Text(if (savePass) "密码（已保存，留空不改）" else "密码") },
-                    singleLine = true, modifier = Modifier.fillMaxWidth())
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(url, { url = it },
-                    label = { Text("教务网址（默认课表页，可改）") },
-                    singleLine = true, modifier = Modifier.fillMaxWidth())
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(savePass, { savePass = it })
-                    Text("保存密码", fontSize = 13.sp, color = th.textPrimary)
-                    Spacer(Modifier.width(10.dp))
-                    Checkbox(auto, { auto = it })
-                    Text("打开时自动更新课表", fontSize = 13.sp, color = th.textPrimary)
+                SectionTitle("账号与导入", th.accent, "👤")
+                SettingsCard(th.bg.copy(alpha = 0.6f), th.divider) {
+                    OutlinedTextField(user, { user = it },
+                        label = { Text("学号 / 账号") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(pass, { pass = it },
+                        label = { Text(if (savePass) "密码（已保存，留空不改）" else "密码") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(url, { url = it },
+                        label = { Text("教务网址（默认课表页，可改）") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Spacer(Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(savePass, { savePass = it })
+                        Text("保存密码", fontSize = 13.sp, color = th.textPrimary)
+                        Spacer(Modifier.width(10.dp))
+                        Checkbox(auto, { auto = it })
+                        Text("打开时自动更新", fontSize = 13.sp, color = th.textPrimary)
+                    }
                 }
 
-                SectionTitle("一周起点", th.accent)
+                SectionTitle("一周起点", th.accent, "📅")
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     FilterChip(selected = !startSunday, onClick = { startSunday = false },
                         label = { Text("周一", fontSize = 12.sp) })
@@ -1550,7 +1638,7 @@ fun SettingsDialog(
                         label = { Text("周日", fontSize = 12.sp) })
                 }
 
-                SectionTitle("色系", th.accent)
+                SectionTitle("色系", th.accent, "🎨")
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     PALETTE_NAMES.forEachIndexed { i, n ->
                         FilterChip(
@@ -1585,60 +1673,63 @@ fun SettingsDialog(
                     )
                 }
 
-                SectionTitle("外观", th.accent)
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    FilterChip(selected = mode == "auto", onClick = { mode = "auto" },
-                        label = { Text("跟随系统", fontSize = 12.sp) })
-                    FilterChip(selected = mode == "light", onClick = { mode = "light" },
-                        label = { Text("浅色", fontSize = 12.sp) })
-                    FilterChip(selected = mode == "dark", onClick = { mode = "dark" },
-                        label = { Text("深色", fontSize = 12.sp) })
-                }
-                Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(checked = invert, onCheckedChange = { invert = it })
-                    Spacer(Modifier.width(8.dp))
-                    Text("反色（在当前模式上翻转明暗）", fontSize = 13.sp, color = th.textPrimary)
-                }
-                Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(showOther, { showOther = it })
-                    Text("显示非本周课程（半透明）", fontSize = 13.sp, color = th.textPrimary)
+                SectionTitle("外观", th.accent, "🌗")
+                SettingsCard(th.bg.copy(alpha = 0.6f), th.divider) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        FilterChip(selected = mode == "auto", onClick = { mode = "auto" },
+                            label = { Text("跟随系统", fontSize = 12.sp) })
+                        FilterChip(selected = mode == "light", onClick = { mode = "light" },
+                            label = { Text("浅色", fontSize = 12.sp) })
+                        FilterChip(selected = mode == "dark", onClick = { mode = "dark" },
+                            label = { Text("深色", fontSize = 12.sp) })
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(checked = invert, onCheckedChange = { invert = it })
+                        Spacer(Modifier.width(8.dp))
+                        Text("反色（在当前模式上翻转明暗）", fontSize = 13.sp, color = th.textPrimary)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(showOther, { showOther = it })
+                        Text("显示非本周课程（半透明）", fontSize = 13.sp, color = th.textPrimary)
+                    }
                 }
 
-                SectionTitle("背景图片", th.accent)
-                Text("上传一张自己的图片做课表背景（仅存本机，不上传）。", fontSize = 12.sp, color = th.textSecondary)
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(onClick = {
-                        bgPicker.launch(
-                            androidx.activity.result.PickVisualMediaRequest(
-                                ActivityResultContracts.PickVisualMedia.ImageOnly
+                SectionTitle("背景图片", th.accent, "🖼️")
+                SettingsCard(th.bg.copy(alpha = 0.6f), th.divider) {
+                    Text("上传一张自己的图片做课表背景（仅存本机，不上传）。", fontSize = 12.sp, color = th.textSecondary)
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedButton(onClick = {
+                            bgPicker.launch(
+                                androidx.activity.result.PickVisualMediaRequest(
+                                    ActivityResultContracts.PickVisualMedia.ImageOnly
+                                )
                             )
-                        )
-                    }) { Text(if (bgUri.isEmpty()) "上传图片" else "更换图片", fontSize = 13.sp) }
+                        }) { Text(if (bgUri.isEmpty()) "上传图片" else "更换图片", fontSize = 13.sp) }
+                        if (bgUri.isNotEmpty()) {
+                            TextButton(onClick = { bgUri = "" }) {
+                                Text("清除", fontSize = 13.sp, color = th.textSecondary)
+                            }
+                        }
+                    }
                     if (bgUri.isNotEmpty()) {
-                        TextButton(onClick = { bgUri = "" }) {
-                            Text("清除", fontSize = 13.sp, color = th.textSecondary)
+                        Spacer(Modifier.height(6.dp))
+                        Text("背景清晰度（往右越淡、文字越清楚）", fontSize = 12.sp, color = th.textSecondary)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Slider(
+                                value = bgDim.toFloat(),
+                                onValueChange = { bgDim = it.toInt() },
+                                valueRange = 0f..100f,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text("$bgDim%", fontSize = 12.sp, color = th.textSecondary)
                         }
                     }
                 }
-                if (bgUri.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    Text("背景清晰度（往右越淡、文字越清楚）", fontSize = 12.sp, color = th.textSecondary)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Slider(
-                            value = bgDim.toFloat(),
-                            onValueChange = { bgDim = it.toInt() },
-                            valueRange = 0f..100f,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text("$bgDim%", fontSize = 12.sp, color = th.textSecondary)
-                    }
-                }
 
-                SectionTitle("更新", th.accent)
+                SectionTitle("更新", th.accent, "🔄")
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checkUp, { checkUp = it })
                     Text("打开时后台检查新版本（GitHub）", fontSize = 13.sp, color = th.textPrimary)
@@ -1687,7 +1778,7 @@ fun SettingsDialog(
                     }
                 }
 
-                SectionTitle("学期", th.accent)
+                SectionTitle("学期", th.accent, "🗓️")
                 OutlinedButton(onClick = {
                     val cal = Calendar.getInstance()
                     DatePickerDialog(context, { _, y, m, d ->

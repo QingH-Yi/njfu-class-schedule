@@ -4,12 +4,19 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -208,11 +215,39 @@ fun MacDialog(
     }
 }
 
-/** 设置页的分类小标题 */
+/** 设置页的分类小标题：左侧一根圆角强调色小竖条 + 文字，比纯文字更有设计感 */
 @Composable
-fun SectionTitle(text: String, color: Color) {
-    Text(
-        text, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = color,
-        modifier = Modifier.padding(top = 14.dp, bottom = 6.dp)
-    )
+fun SectionTitle(text: String, color: Color, icon: String = "") {
+    Row(
+        modifier = Modifier.padding(top = 18.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .width(4.dp)
+                .height(15.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(color)
+        )
+        Spacer(Modifier.width(8.dp))
+        if (icon.isNotEmpty()) {
+            Text(icon, fontSize = 14.sp)
+            Spacer(Modifier.width(5.dp))
+        }
+        Text(text, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = color)
+    }
 }
+
+/** 设置项分组卡片：把一组设置放进圆角浅底卡片，视觉上成块、不再平铺 */
+@Composable
+fun SettingsCard(color: Color, border: Color, content: @Composable ColumnScope.() -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = color,
+        border = BorderStroke(1.dp, border),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), content = content)
+    }
+}
+

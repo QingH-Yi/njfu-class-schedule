@@ -119,8 +119,67 @@
   // 判断一行是不是"周次"行
   function isWeekLine(l) { return /[0-9]/.test(l) && /周/.test(l) && !/上课|地点|老师|教师/.test(l); }
 
+  // 规范化教室：教学楼 + 教室 合成一个干净地点，去掉中间的破折号。
+  // 在线课只留教室文本；教学楼为空/是"其他"只留教室；其余 "教学楼 教室"。
+  // 与 JwxtParser.kt 的 normalizeLocation 同步。
+  function normalizeLocation(building, room) {
+    var b = (building || '').trim().replace(/^[【\[]|[】\]]$/g, '').trim();
+    var r = (room || '').trim();
+    if (!r) return b;
+    if (r.indexOf('在线') >= 0) return r;
+    if (!b || b === '其他') return r;
+    if (r.indexOf(b) >= 0 || r.charAt(0) === '教') return r.replace(/-/g, ' ').trim();
+    return b + ' ' + r;
+  }
+
+  // 按 <font title='...'> 精确解析一个课程块。识别：课名（无 title 的 font）、周次(节次)、教室、教学楼、教师。
+  // 解析不出课名 / 没有 title 字段时返回 null，调用方回退到"按行猜"的老逻辑。
+  function parseCellByTitle(html) {
+    var doc = new DOMParser().parseFromString('<div>' + html + '</div>', 'text/html');
+    var fonts = doc.querySelectorAll('font[title]');
+    if (!fonts.length) return null;
+    var course = { name: '', teacher: '', location: '', weeks: null, startPeriod: null, endPeriod: null, startTime: '', endTime: '', building: '' };
+    var periodList = null;
+    for (var i = 0; i < fonts.length; i++) {
+      var f = fonts[i];
+      var title = (f.getAttribute('title') || '').trim();
+      var text = (f.textContent || '').replace(/[ 　\s]+/g, ' ').trim();
+      if (!text) continue;
+      if (title === '周次(节次)' || title === '周次') {
+        var pl = parsePeriodList(text);
+        if (pl && !periodList) {
+          periodList = pl;
+          if (/周/.test(text)) {
+            var wk = parseWeeks(text.replace(/\[.*?\]/g, ' '));
+            if (wk && !course.weeks) course.weeks = wk;
+          }
+        } else if (isWeekLine(text) && !course.weeks) {
+          course.weeks = parseWeeks(text);
+        }
+      } else if (title === '教室') { if (!course.location) course.location = text; }
+      else if (title === '教学楼') { if (!course.building) course.building = text; }
+      else if (title === '教师') { if (!course.teacher) course.teacher = text; }
+    }
+    var allFonts = doc.querySelectorAll('font');
+    for (var j = 0; j < allFonts.length; j++) {
+      if (!allFonts[j].hasAttribute('title')) {
+        var nm = (allFonts[j].textContent || '').replace(/[ 　\s]+/g, ' ').trim();
+        if (nm) { course.name = nm; break; }
+      }
+    }
+    if (!course.name) return null;
+    course.location = normalizeLocation(course.building, course.location);
+    if (periodList) { course.startPeriod = periodList[0]; course.endPeriod = periodList[periodList.length - 1]; }
+    return course;
+  }
+
   /* ---------- 单元格解析（兼容旧版 + 新版正方门户） ---------- */
   function parseCell(html) {
+    // 优先：按 <font title='教师'/'教室'/'教学楼'/'周次(节次)'> 精确解析（与 JwxtParser.kt 的 parseCellByTitle 同步）。
+    // 强智课表页每个字段都带 title，这是最可靠的来源——比"猜哪行是老师/教室"准得多。
+    var byTitle = parseCellByTitle(html);
+    if (byTitle) return byTitle;
+
     var lines = innerText(html).filter(function (l) {
       // 强智格子里的"通知单编号/班级/备注"管理元数据、横线分隔行、
       // "(讲课:16)"/"(舞龙)"等括号备注不是课程字段
@@ -186,7 +245,7 @@
         // 地点：含楼/教/实验/馆/室/校区 等，或形如 教9-101 / 实验楼A302
         var looksPlace = /(楼|教|实验|馆|室|区|号楼|楼\d|\d{2,4}\b)/.test(line) && !/@/.test(line);
         var looksTeacher = /(老师|教授|副教授|讲师|博士)/.test(line) || /^[一-龥·、,\s]{2,12}$/.test(line);
-        if (!course.location && looksPlace && !looksTeacher) { course.location = line; }
+        if (!course.location && looksPlace && !looksTeacher) { course.location = normalizeLocation('', line); }
         else if (!course.teacher && (looksTeacher || (!course.location && !looksPlace))) { course.teacher = course.teacher ? course.teacher + '、' + line : line; }
         else if (!course.location && !course.teacher) { course.teacher = line; }
       }

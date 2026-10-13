@@ -117,12 +117,46 @@ class MainScreenRobolectricTest {
     }
 
     @Test
-    fun locationShownOnGridCard() {
+    fun locationShownOnGridCardWhenPresent() {
+        // 需求：有教室的课，课程格上要显示教室（没教室的课才不显示）。
         seed()
         rule.setContent { ScheduleApp(mutableStateOf(0)) }
         rule.waitForIdle()
-        // 主界面课程格要能看到教室（不点进详情）
-        assertTrue("课程格应显示教室", hasText("教五楼-50320"))
+        assertTrue("有教室的课，课程格应显示教室", hasText("教五楼-50320"))
+    }
+
+    @Test
+    fun teacherShownOnGridCard() {
+        // 需求：所有课在课程格上都要显示老师（不用点进详情）。
+        seed()
+        rule.setContent { ScheduleApp(mutableStateOf(0)) }
+        rule.waitForIdle()
+        assertTrue("课程格应显示老师", hasText("戴斌"))
+    }
+
+    @Test
+    @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
+    fun teacherVisibleEvenWithLongCourseName() {
+        // 超长课名 + 有教室：课名/教室/老师都要能显示（字号自适应，不裁掉老师）。
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        Repository.init(ctx)
+        Repository.checkUpdate = false
+        Repository.showTutorial = false
+        Repository.weekOverride = 7
+        Repository.autoUpdate = false
+        Repository.saveSchedule(
+            Schedule(
+                term = "2026-2027-1", termStartMonday = "2026-08-31", campus = "xz",
+                courses = listOf(
+                    Course("c1", "工程经济管理概论[社会认知类]（分组01）", "王老师", "50320", 1, 1, 1, (3..8).toList())
+                )
+            )
+        )
+        rule.setContent { ScheduleApp(mutableStateOf(0)) }
+        rule.waitForIdle()
+        val nodes = rule.onAllNodesWithText("王老师", substring = true).fetchSemanticsNodes()
+            .filter { it.boundsInRoot.width > 0f && it.boundsInRoot.height > 0f }
+        assertTrue("长课名下老师仍应可见", nodes.isNotEmpty())
     }
 
     @Test

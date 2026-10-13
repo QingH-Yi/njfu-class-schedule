@@ -47,7 +47,7 @@ class ParserRealDataTest {
         println("term = ${r.term}, 共 ${r.courses.size} 门")
         r.courses.sortedWith(compareBy({ it.day }, { it.startPeriod }))
             .forEach {
-                println("周${it.day} 第${it.startPeriod}-${it.endPeriod}节 ${it.name} | ${it.teacher} | ${it.location} | ${it.weeks}")
+                println("周${it.day} 第${it.startPeriod}-${it.endPeriod}节 ${it.name} | 师=${it.teacher} | 教室=${it.location} | ${it.weeks}")
             }
 
         // 学期：页面学期下拉选中文本为 "2026-2027-1"
@@ -73,7 +73,7 @@ class ParserRealDataTest {
         assertEquals(1, plc.startPeriod)
         assertEquals(3, plc.endPeriod)
         assertEquals("戴斌", plc.teacher)
-        assertEquals("50320", plc.location)
+        assertEquals("教五楼 50320", plc.location)
         assertEquals(listOf(3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 18), plc.weeks)
 
         // 抽查 2：跨大节格子（该课在第一大节/第二大节两行重复出现，应只剩一条）
@@ -85,7 +85,7 @@ class ParserRealDataTest {
         assertEquals(9, eco.startPeriod)
         assertEquals(11, eco.endPeriod)
         assertEquals("殷文莉", eco.teacher)
-        assertEquals("0327", eco.location)
+        assertEquals("教学主楼 0327", eco.location)
 
         // 抽查 4：周五 信号与系统分析 1-2 节，周次 7-8,10-12
         val sig = r.courses.first { it.name == "信号与系统分析" && it.day == 5 }
@@ -105,10 +105,10 @@ class ParserRealDataTest {
         assertEquals(5, dev.startPeriod)
         assertEquals(7, dev.endPeriod)
         assertEquals("宋芸", dev.teacher)
-        assertEquals("50118", dev.location)
+        assertEquals("教五楼 50118", dev.location)
 
         // 抽查 7：体育(5) 的括号备注/通知单/分隔线全部丢弃，老师=任路遥
-        val pe = r.courses.first { it.name == "体育(5)" }
+        val pe = r.courses.first { it.name.startsWith("体育(5)") }
         assertEquals("任路遥", pe.teacher)
         assertEquals("", pe.location)
         assertEquals(7, pe.startPeriod)

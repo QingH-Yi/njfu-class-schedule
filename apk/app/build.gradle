@@ -12,8 +12,8 @@ android {
         applicationId "com.njfu.schedule"
         minSdk 26
         targetSdk 35
-        versionCode 34
-        versionName "2.3.6"
+        versionCode 36
+        versionName "2.3.8"
         // 只保留中英文资源，去掉 AndroidX 自带的其他语言，减小体积
         resConfigs "zh", "en"
     }

@@ -219,6 +219,7 @@ object JwxtParser {
         var name: String = "",
         var teacher: String = "",
         var location: String = "",
+        var building: String = "",
         var weeks: List<Int> = emptyList(),
         var startTime: String = "",
         var endTime: String = ""
@@ -229,6 +230,11 @@ object JwxtParser {
      * 与 web/js/parser.js 的 parseCellBlock 保持同步。
      */
     private fun parseCellBlock(blockHtml: String): Pair<CellInfo, Pair<Int?, Int?>>? {
+        // 优先：按 <font title='教师'/'教室'/'教学楼'/'周次(节次)'> 精确解析。
+        // 强智课表页每个字段都带 title 标注，这是最可靠的来源——比"猜哪行是老师/教室"准得多
+        // （曾把"阶4"教室猜成老师、真正有老师的课反而空着）。
+        parseCellByTitle(blockHtml)?.let { return it }
+
         val lines = blockHtml
             .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
             .replace(Regex("</(div|p|td|li|span|font|a|b|strong|i|em)>", RegexOption.IGNORE_CASE), "\n")
@@ -297,12 +303,59 @@ object JwxtParser {
                 val looksPlace = Regex("(楼|教|实验|馆|室|区|号楼|\\d{2,4})").containsMatchIn(line) && !line.contains("@")
                 val looksTeacher = Regex("(老师|教授|副教授|讲师|博士)").containsMatchIn(line) ||
                         Regex("^[\\u4e00-\\u9fa5·、,\\s]{2,12}$").matches(line)
-                if (c.location.isEmpty() && looksPlace && !looksTeacher) c.location = line
+                if (c.location.isEmpty() && looksPlace && !looksTeacher) c.location = normalizeLocation("", line)
                 else if (c.teacher.isEmpty() && (looksTeacher || (c.location.isEmpty() && !looksPlace))) c.teacher = line
                 else if (c.location.isEmpty() && c.teacher.isEmpty()) c.teacher = line
             }
         }
         if (c.name.isEmpty()) return null
+        return c to (sp to ep)
+    }
+
+    /**
+     * 按 <font title='...'> 精确解析一个课程块（强智课表页每个字段都带 title）。
+     * 识别：课名（无 title 的那个 font）、周次(节次)、教室、教学楼、教师。
+     * 解析不出课名 / 没有 title 字段时返回 null，调用方回退到"按行猜"的老逻辑。
+     * 与 web/js/parser.js 的 parseCellByTitle 保持同步。
+     */
+    private fun parseCellByTitle(blockHtml: String): Pair<CellInfo, Pair<Int?, Int?>>? {
+        val doc = Jsoup.parseBodyFragment(blockHtml)
+        val titled = doc.select("font[title]")
+        if (titled.isEmpty()) return null
+        val c = CellInfo()
+        var periodList: List<Int>? = null
+        for (f in titled) {
+            val title = f.attr("title").trim()
+            val text = norm(f.text())
+            if (text.isEmpty()) continue
+            when {
+                title == "周次(节次)" || title == "周次" -> {
+                    val pl = parsePeriodList(text)
+                    if (pl != null && periodList == null) {
+                        periodList = pl
+                        // 该 font 形如 "3-8,10-13,18(周)[01-02-03节]"：既含周次又含节次
+                        val wk = parseWeeks(text.replace(Regex("\\[.*?\\]"), " "))
+                        if (wk.isNotEmpty() && c.weeks.isEmpty()) c.weeks = wk
+                    } else if (isWeekLine(text) && c.weeks.isEmpty()) {
+                        c.weeks = parseWeeks(text)
+                    }
+                }
+                title == "教室" -> if (c.location.isEmpty()) c.location = text
+                title == "教学楼" -> if (c.building.isEmpty()) c.building = text.trim('【', '】')
+                title == "教师" -> if (c.teacher.isEmpty()) c.teacher = text
+            }
+        }
+        // 课名 = 块里没有 title 的那个 font（第一段纯文本）
+        val nameFont = doc.select("font").firstOrNull { !it.hasAttr("title") && norm(it.text()).isNotEmpty() }
+        if (nameFont != null) c.name = norm(nameFont.text())
+        if (c.name.isEmpty()) return null
+        // 教室规范化：教学楼 + 教室 合成一个干净的地点，不要中间的破折号。
+        //  - 在线课（教室含"在线"）：只留教室文本（如"新庄校区在线教学"），不加"其他-"前缀
+        //  - 教学楼为空或是"其他"：只留教室
+        //  - 其余：教学楼 + 空格 + 教室（如"教五楼 50320"）
+        c.location = normalizeLocation(c.building, c.location)
+        var sp: Int? = null; var ep: Int? = null
+        if (periodList != null) { sp = periodList.first(); ep = periodList.last() }
         return c to (sp to ep)
     }
 
@@ -357,6 +410,25 @@ object JwxtParser {
 
     // ---- 工具 ----
     private fun norm(s: String) = s.replace(Regex("[\\u00a0\\u3000\\s]+"), " ").trim()
+
+    /**
+     * 规范化教室显示：把"教学楼 + 教室"合成一个干净地点，去掉中间的破折号。
+     *  - 在线课（教室含"在线"）：只留教室文本（如"新庄校区在线教学"）
+     *  - 教学楼为空 / 是"其他"：只留教室
+     *  - 其余：教学楼 + 空格 + 教室（如"教五楼 50320"）
+     * 与 web/js/parser.js 的 normalizeLocation 保持同步。
+     */
+    private fun normalizeLocation(building: String, room: String): String {
+        val b = building.trim().trim('【', '】').trim()
+        val r = room.trim()
+        if (r.isEmpty()) return b
+        if (r.contains("在线")) return r
+        // 教室文本统一去掉中间的破折号（"教五楼-50320" → "教五楼 50320"）
+        val rClean = r.replace("-", " ").replace("　", " ").replace(Regex("\\s+"), " ").trim()
+        if (b.isEmpty() || b == "其他") return rClean
+        if (rClean.contains(b) || rClean.startsWith("教")) return rClean
+        return "$b $rClean"
+    }
 
     private fun isWeekLine(l: String) =
         l.any { it.isDigit() } && l.contains("周") &&

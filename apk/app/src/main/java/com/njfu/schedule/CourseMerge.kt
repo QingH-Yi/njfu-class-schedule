@@ -53,3 +53,4 @@ fun unionSlots(courses: List<Course>): Set<Pair<Int, Int>> =
         .flatMap { c -> (c.startPeriod..c.endPeriod).map { c.day to it } }
         .toSet()
 
+

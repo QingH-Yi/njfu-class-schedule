@@ -12,8 +12,8 @@ android {
         applicationId "com.njfu.schedule"
         minSdk 26
         targetSdk 35
-        versionCode 25
-        versionName "2.1.4"
+        versionCode 26
+        versionName "2.1.5"
     }
 
     // 签名密钥信息放在【不入库】的 keystore.properties（含密码）。缺失时 release 不签名。

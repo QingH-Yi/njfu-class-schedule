@@ -100,6 +100,23 @@ class MainScreenRobolectricTest {
     }
 
     @Test
+    fun refreshKeepsViewedWeekAndArrangement() {
+        seed()   // weekOverride=7；专业实习在第 7-9 周
+        val refresh = mutableStateOf(0)
+        rule.setContent { ScheduleApp(refresh) }
+        rule.waitForIdle()
+        // 滑到下一周（离开"本周"）→ 出现"回到第 7 周"提示
+        rule.onNodeWithTag("weekPager").performTouchInput { swipeLeft() }
+        rule.waitForIdle()
+        assertTrue("滑动后应离开本周", hasText("回到第 7 周（本周）"))
+        // 模拟后台自动更新完成：刷新不该把翻周位置弹回本周。
+        // 回归：以前 key(refreshState) 会整树重建，翻周位置/实习会被重置（用户报的"划着划着实习就没了"）。
+        refresh.value++
+        rule.waitForIdle()
+        assertTrue("刷新后不该弹回本周", hasText("回到第 7 周（本周）"))
+    }
+
+    @Test
     fun locationShownOnGridCard() {
         seed()
         rule.setContent { ScheduleApp(mutableStateOf(0)) }

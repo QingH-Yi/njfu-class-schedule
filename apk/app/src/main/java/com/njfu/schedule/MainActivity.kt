@@ -86,17 +86,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Repository.init(this)
 
-        // 覆盖安装（版本号变了且不是首次安装）：先清掉旧版本残留的课表数据，再强制抓取一次
+        // 覆盖安装（版本号变了且不是首次安装）：**不再清空本地课表**。
+        // 旧数据由 loadSchedule 的宽松解析兜底，不会崩；清空反而会在"重抓失败/需重新登录"时
+        // 让用户看到空课表（曾把用户数据弄丢）。改为直接保留旧课表，稍后用教务数据覆盖合并。
         val verCode = try {
             packageManager.getPackageInfo(packageName, 0).versionCode
         } catch (e: Exception) {
             0
         }
         val upgraded = Repository.appVersion != 0 && Repository.appVersion != verCode
-        if (upgraded) {
-            // 覆盖安装：只清本地课表（保留账号/外观）；不在启动路径建 WebView（会拖慢开机）
-            Repository.clearCourses()
-        }
         Repository.appVersion = verCode
 
         setContent { ScheduleApp(refreshSignal) }
@@ -377,8 +375,9 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
         else
             lightColorScheme(primary = th.accent, background = th.bg, surface = th.surface)
     ) {
-    // 任何设置 / 数据变化都让整棵界面重新读一遍（等效"重启"，但不会闪退、不丢画面）
-    key(refreshState.value) {
+    // 注意：这里【不能】用 key(refreshState.value) 把整棵树重建——那会重置课表翻周位置、
+    // 纵向滚动、正在输入的弹窗，表现为"滑到某周后（后台刷新一来）内容突然变了/实习消失"。
+    // 改为就地更新 schedule（下方各 remember 都以 refreshState 为 key 重新读取设置）。
     Scaffold(
         containerColor = th.bg,
         topBar = {
@@ -475,7 +474,7 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                     ) { isGrid ->
                         if (isGrid) {
                             TimetableView(
-                                schedule, currentWeek, th,
+                                schedule, currentWeek, th, settingsKey = refreshState.value,
                                 onCourseClick = { detail = it },
                                 onAddCourse = { d, p, w -> addReq = Triple(d, p, w) }
                             )
@@ -652,7 +651,6 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
         TutorialDialog(th = th, onDone = { showTutorial = false })
     }
     }
-    }
 }
 
 @Composable
@@ -694,6 +692,7 @@ fun TimetableView(
     schedule: Schedule,
     currentWeek: Int,
     th: AppColors,
+    settingsKey: Int,
     onCourseClick: (Course) -> Unit,
     onAddCourse: (day: Int, period: Int, viewedWeek: Int) -> Unit
 ) {
@@ -719,9 +718,9 @@ fun TimetableView(
     // 翻周时清除选中高亮
     LaunchedEffect(pagerState.currentPage) { selectedKey = null }
     // 一周起点可设为周日：列顺序变化，日期按 周日=该周最后一天 重排
-    // 外观设置只读一次，避免在每页/每次重绘里反复读 SharedPreferences（外观变更由 refreshState 整树重建）
-    val showOtherWeek = remember { Repository.showOtherWeekCourses }
-    val startSunday = remember { Repository.weekStartSunday }
+    // 外观设置只读一次；settingsKey 变化（改了设置）时重读——原先靠整树重建生效，现在显式带 key
+    val showOtherWeek = remember(settingsKey) { Repository.showOtherWeekCourses }
+    val startSunday = remember(settingsKey) { Repository.weekStartSunday }
     val dayCols = remember(startSunday) { if (startSunday) listOf(7, 1, 2, 3, 4, 5, 6) else (1..7).toList() }
     val dateIdx: (Int) -> Int = if (startSunday)
         { i -> if (i == 0) 6 else i - 1 } else { i -> i }

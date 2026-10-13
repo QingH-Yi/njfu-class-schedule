@@ -34,6 +34,23 @@ class RepositoryEditTest {
     }
 
     @Test
+    fun credentialsSurviveScheduleRefresh() {
+        // 用户报"更新后账号密码要保存"：覆盖安装/重抓（replaceCourses）都不能碰账号密码设置。
+        Repository.user = "20240001"
+        Repository.pass = "secret123"
+        Repository.savedPass = true
+        // 模拟更新后重新抓取：整表覆盖
+        Repository.replaceCourses(
+            listOf(Course("n1", "新抓的课", "老师", "", 2, 1, 2, listOf(1, 2))),
+            "2026-2027-1", keepEdited = false
+        )
+        assertEquals("账号应保留", "20240001", Repository.user)
+        assertEquals("密码应保留", "secret123", Repository.pass)
+        assertTrue("保存密码开关应保留", Repository.savedPass)
+        assertTrue("凭据仍可用（自动更新依赖它）", Repository.hasCredentials())
+    }
+
+    @Test
     fun internWithSlotsBecomesNormalCourse() {
         // 给整周实习选了 周三 第3-4节 → 应变成 day=3 的普通课，不再有 day=0
         Repository.editCourse(

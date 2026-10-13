@@ -24,6 +24,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
@@ -78,6 +80,8 @@ import java.util.Calendar
 class MainActivity : ComponentActivity() {
 
     private val refreshSignal = mutableStateOf(0)
+    /** 由桌面小组件传入的"要打开的课程"标识（名称|星期|起始节）；null=不打开详情 */
+    private val openCourseKey = mutableStateOf<String?>(null)
     private var bgWebView: WebView? = null
     private var bgGrab: BgGrab? = null
 
@@ -97,7 +101,9 @@ class MainActivity : ComponentActivity() {
         val upgraded = Repository.appVersion != 0 && Repository.appVersion != verCode
         Repository.appVersion = verCode
 
-        setContent { ScheduleApp(refreshSignal) }
+        // 小组件点课程卡片进来时带 EXTRA_COURSE_KEY：先取出来，交给 ScheduleApp 打开详情
+        openCourseKey.value = intent?.getStringExtra(EXTRA_COURSE_KEY)
+        setContent { ScheduleApp(refreshSignal, openCourseKey) }
         // 打开时自动更新课表（尽力而为，依赖已保存的登录会话）；
         // 覆盖安装后的第一次打开即使关了自动更新也强制抓一次，保证数据是干净的
         if (Repository.hasCredentials() && (Repository.autoUpdate || upgraded)) {
@@ -189,6 +195,13 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    /** 已在前台时再次点小组件卡片：onNewIntent 收到新的课程标识 */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        openCourseKey.value = intent.getStringExtra(EXTRA_COURSE_KEY)
+    }
+
     /** 打开/回到 App 时刷新桌面小组件（覆盖"导入课表返回""改设置"等场景） */
     override fun onStart() {
         super.onStart()
@@ -275,6 +288,8 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
+        /** 桌面小组件"点课程→打开详情"用的 Intent extra：courseKey（名称|星期|起始节） */
+        const val EXTRA_COURSE_KEY = "com.njfu.schedule.extra.COURSE_KEY"
         /** GitHub 用户名（改名后统一在这里改） */
         const val GITHUB_USER = "QingH-Yi"
         /** 站点主页 */
@@ -341,7 +356,7 @@ var h=walk(window,0)||document.documentElement.outerHTML;AndroidGrab.receive(h);
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ScheduleApp(refreshState: MutableState<Int>) {
+fun ScheduleApp(refreshState: MutableState<Int>, openCourseKey: MutableState<String?> = mutableStateOf(null)) {
     val context = LocalContext.current
     var schedule by remember { mutableStateOf(Repository.loadSchedule()) }
     var showSettings by remember { mutableStateOf(false) }
@@ -353,6 +368,18 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
 
     // 后台自动更新完成后刷新界面
     LaunchedEffect(refreshState.value) { schedule = Repository.loadSchedule() }
+
+    // 桌面小组件点课程卡片进来（或已在前台又点了一次）：按 courseKey 找到那门课并打开详情。
+    // courseKey = 名称|星期|起始节，整表覆盖后 id 会变，所以不能用 id 匹配。
+    LaunchedEffect(openCourseKey.value, schedule.courses) {
+        val k = openCourseKey.value ?: return@LaunchedEffect
+        val target = schedule.courses.firstOrNull { courseKey(it) == k }
+            ?: schedule.courses.firstOrNull { it.name == k.substringBefore('|') }
+        if (target != null) {
+            detail = target
+            openCourseKey.value = null   // 消费掉，避免反复弹出
+        }
+    }
 
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -1186,7 +1213,9 @@ fun parseWeeksText(text: String): List<Int> {
 @Composable
 fun PeriodPicker(selected: Set<Pair<Int, Int>>, th: AppColors, onChange: (Set<Pair<Int, Int>>) -> Unit) {
     val cellW = 32.dp; val cellH = 20.dp
-    var paintAdd by remember { mutableStateOf(true) }
+    // pointerInput(Unit) 不会因选中集变化重启，用这两个 holder 读最新的选中集与回调
+    val latestSelected = rememberUpdatedState(selected)
+    val latestOnChange = rememberUpdatedState(onChange)
     Column(Modifier.fillMaxWidth()) {
         Row {
             Box(Modifier.width(18.dp)) {}
@@ -1205,27 +1234,61 @@ fun PeriodPicker(selected: Set<Pair<Int, Int>>, th: AppColors, onChange: (Set<Pa
             Box(
                 Modifier.weight(1f).height(cellH * 11).clip(RoundedCornerShape(8.dp))
                     .background(th.divider.copy(alpha = 0.35f))
-                    .pointerInput(selected) {
+                    .pointerInput(Unit) {
                         val w = size.width / 7f; val h = size.height / 11f
                         fun cell(x: Float, y: Float): Pair<Int, Int> =
                             ((x / w).toInt().coerceIn(0, 6) + 1) to ((y / h).toInt().coerceIn(0, 10) + 1)
-                        detectDragGestures(
-                            onDragStart = { o ->
-                                val c = cell(o.x, o.y); paintAdd = c !in selected
-                                onChange(if (paintAdd) selected + c else selected - c)
-                            },
-                            onDrag = { ch, _ ->
+                        fun paint(base: Set<Pair<Int, Int>>, c: Pair<Int, Int>, add: Boolean): Set<Pair<Int, Int>> =
+                            if (add) base + c else base - c
+                        // 关键：pointerInput 以 Unit 为 key，手势不会因 selected 变化而重启（旧实现每次
+                        // onChange 都会重启检测、把正在进行的拖拽掐断，所以最多只画到第一格）。
+                        // 因此这里改为每次手势开始时从 latestSelected / latestOnChange 读最新值。
+                        //
+                        // 手势判定：先用 touchSlop 区分"点击"与"拖拽"，避免误触；若父级滚动（弹窗是
+                        // verticalScroll）先消费了事件，就放弃本次绘制、把滚动让给父级。
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val startCell = cell(down.position.x, down.position.y)
+                            val add = startCell !in latestSelected.value
+                            val slop = viewConfiguration.touchSlop
+                            val downPos = down.position
+                            var dragging = false
+                            var cancelled = false
+                            var painted = latestSelected.value
+                            var lastCell = startCell
+                            while (true) {
+                                val ev = awaitPointerEvent()
+                                val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!ch.pressed) {
+                                    // 抬起：没越过 slop 且父级没消费 => 单击，切换该格
+                                    if (!dragging && !cancelled) {
+                                        latestOnChange.value(paint(painted, startCell, add))
+                                    }
+                                    break
+                                }
+                                if (cancelled) { ch.consume(); continue }
+                                if (!dragging) {
+                                    val dx = ch.position.x - downPos.x
+                                    val dy = ch.position.y - downPos.y
+                                    if (dx * dx + dy * dy < slop * slop) {
+                                        // 还在 slop 内：若父级已开始处理（如纵向滚动），放弃，避免误画
+                                        if (ch.isConsumed) { cancelled = true; ch.consume() }
+                                        continue
+                                    }
+                                    dragging = true
+                                    // 越界：此刻才提交起点 + 起点所在的模式（选中/擦除）
+                                    painted = paint(painted, startCell, add)
+                                    latestOnChange.value(painted)
+                                    lastCell = startCell
+                                }
                                 val c = cell(ch.position.x, ch.position.y)
-                                if (paintAdd && c !in selected) onChange(selected + c)
+                                if (c != lastCell) {
+                                    lastCell = c
+                                    val next = paint(painted, c, add)
+                                    if (next != painted) { painted = next; latestOnChange.value(painted) }
+                                }
                                 ch.consume()
                             }
-                        )
-                    }
-                    .pointerInput(selected) {
-                        val w = size.width / 7f; val h = size.height / 11f
-                        detectTapGestures { o ->
-                            val c = ((o.x / w).toInt().coerceIn(0, 6) + 1) to ((o.y / h).toInt().coerceIn(0, 10) + 1)
-                            onChange(if (c in selected) selected - c else selected + c)
                         }
                     }
             ) {

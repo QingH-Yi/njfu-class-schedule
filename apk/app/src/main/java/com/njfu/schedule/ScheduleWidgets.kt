@@ -1,21 +1,21 @@
 package com.njfu.schedule
 
 import android.content.Context
+import android.content.Intent
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
-import androidx.glance.action.actionStartActivity
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
+import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.SizeMode
+import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.provideContent
-import androidx.glance.appwidget.lazy.LazyColumn
+import androidx.glance.appwidget.updateAll
 import androidx.glance.background
-import androidx.glance.layout.Alignment
-import androidx.glance.layout.Box
 import androidx.glance.layout.Column
 import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
@@ -28,8 +28,6 @@ import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
-import androidx.glance.appwidget.GlanceAppWidgetReceiver
-import androidx.glance.appwidget.updateAll
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -61,29 +59,62 @@ private val WIDGET_CARD_COLORS = listOf(
 )
 private val WIDGET_TEXT_ON_CARD = Color(0xFF4A3B30)
 
+/** 正在上的课用暖橙高亮，和普通马卡龙底色明显区分 */
+private val WIDGET_ONGOING_BG = Color(0xFFFFE3B8)
+private val WIDGET_ONGOING_TEXT = Color(0xFF8A4B06)
+private val WIDGET_ONGOING_EDGE = Color(0xFFE0912F)
+
 private fun cardColor(name: String): Color {
     var h = 0
     for (ch in name) h = h * 31 + ch.code
     return WIDGET_CARD_COLORS[((h % WIDGET_CARD_COLORS.size) + WIDGET_CARD_COLORS.size) % WIDGET_CARD_COLORS.size]
 }
 
-/** 点击整块小组件 → 打开 App */
-private fun openApp() = actionStartActivity<MainActivity>()
+/** 点击整块小组件 → 打开 App（回到默认视图） */
+private fun openApp() = androidx.glance.action.actionStartActivity<MainActivity>()
 
-/** 小卡片：下一门课 + 今日还剩几节 */
+/**
+ * 点击某节课程 → 打开 App 并直接弹出该课详情。
+ * 主界面用 courseKey（名称|星期|起始节）匹配课程，避免 id 在整表覆盖后变化。
+ * 这里用 setClassName 直接构造 Intent，不依赖 Context。
+ */
+private fun openCourse(key: String) = actionStartActivity(
+    Intent().apply {
+        setClassName("com.njfu.schedule", "com.njfu.schedule.MainActivity")
+        action = Intent.ACTION_MAIN
+        addCategory(Intent.CATEGORY_LAUNCHER)
+        putExtra(MainActivity.EXTRA_COURSE_KEY, key)
+        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+    }
+)
+
+/** 小卡片：正在上 / 下一门课 + 今日还剩几节 */
 @Composable
 fun NextClassContent(context: Context) {
     val schedule = WidgetData.load(context)
     val week = WidgetData.currentWeek(schedule)
     val today = WidgetData.todayIso()
-    val next = nextClass(schedule, week, today, WidgetData.now())
-    val remaining = remainingToday(schedule, week, today, WidgetData.now())
+    val now = WidgetData.now()
+    val next = nextClass(schedule, week, today, now)
+    val remaining = remainingToday(schedule, week, today, now)
 
     Column(
         modifier = GlanceModifier.fillMaxSize().background(Color(0xFFFDF8F1))
             .padding(12.dp).clickable(openApp())
     ) {
-        Text("第 $week 周 · ${dayName(today)}", style = TextStyle(color = ColorProvider(Color(0xFFA08D7C)), fontSize = 11.sp))
+        Row(modifier = GlanceModifier.fillMaxWidth()) {
+            Text(
+                "第 $week 周 · ${dayName(today)}",
+                modifier = GlanceModifier.defaultWeight(),
+                style = TextStyle(color = ColorProvider(Color(0xFFA08D7C)), fontSize = 11.sp)
+            )
+            if (next != null && next.ongoing) {
+                Text(
+                    "● 正在上",
+                    style = TextStyle(color = ColorProvider(WIDGET_ONGOING_EDGE), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                )
+            }
+        }
         Spacer(GlanceModifier.height(6.dp))
         if (next == null) {
             Text(
@@ -93,12 +124,20 @@ fun NextClassContent(context: Context) {
         } else {
             Text(
                 next.name,
-                style = TextStyle(color = ColorProvider(WIDGET_TEXT_ON_CARD), fontSize = 15.sp, fontWeight = FontWeight.Bold),
+                modifier = GlanceModifier.fillMaxWidth()
+                    .clickable(openCourse(next.key))
+                    .background(if (next.ongoing) WIDGET_ONGOING_BG else cardColor(next.name))
+                    .padding(4.dp),
+                style = TextStyle(
+                    color = ColorProvider(if (next.ongoing) WIDGET_ONGOING_TEXT else WIDGET_TEXT_ON_CARD),
+                    fontSize = 15.sp, fontWeight = FontWeight.Bold
+                ),
                 maxLines = 2
             )
             Spacer(GlanceModifier.height(3.dp))
             Text(
-                "⏰ ${next.startTime}-${next.endTime}  第${next.startPeriod}节",
+                "${if (next.ongoing) "⏳ 至" else "⏰"} ${next.startTime}-${next.endTime}  第${next.startPeriod}节" +
+                        if (next.startPeriod != next.endPeriod) "" else "",
                 style = TextStyle(color = ColorProvider(Color(0xFF6B584C)), fontSize = 12.sp)
             )
             if (next.location.isNotEmpty()) {
@@ -107,7 +146,8 @@ fun NextClassContent(context: Context) {
         }
         Spacer(GlanceModifier.height(6.dp))
         Text(
-            if (remaining > 0) "今日还剩 $remaining 节" else "今日课程已结束",
+            if (next != null && next.ongoing) "今日还剩 $remaining 节（含正在上）"
+            else if (remaining > 0) "今日还剩 $remaining 节" else "今日课程已结束",
             style = TextStyle(color = ColorProvider(Color(0xFFA08D7C)), fontSize = 11.sp)
         )
     }
@@ -119,6 +159,8 @@ fun WeekContent(context: Context) {
     val schedule = WidgetData.load(context)
     val week = WidgetData.currentWeek(schedule)
     val today = WidgetData.todayIso()
+    val now = WidgetData.now()
+    val ongoingKey = currentClass(schedule, week, today, now)?.key
 
     val byDay = (1..7).associateWith { d ->
         schedule.courses.filter { it.day == d && courseInWeek(it, week) }
@@ -129,10 +171,16 @@ fun WeekContent(context: Context) {
         modifier = GlanceModifier.fillMaxSize().background(Color(0xFFFDF8F1))
             .padding(10.dp).clickable(openApp())
     ) {
-        Text(
-            "第 $week 周 · ${schedule.term.ifEmpty { "本学期" }}",
-            style = TextStyle(color = ColorProvider(Color(0xFF6B584C)), fontSize = 12.sp, fontWeight = FontWeight.Bold)
-        )
+        Row(modifier = GlanceModifier.fillMaxWidth()) {
+            Text(
+                "第 $week 周 · ${schedule.term.ifEmpty { "本学期" }}",
+                modifier = GlanceModifier.defaultWeight(),
+                style = TextStyle(color = ColorProvider(Color(0xFF6B584C)), fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            )
+            if (ongoingKey != null) {
+                Text("● 正在上", style = TextStyle(color = ColorProvider(WIDGET_ONGOING_EDGE), fontSize = 11.sp, fontWeight = FontWeight.Bold))
+            }
+        }
         Spacer(GlanceModifier.height(6.dp))
         Row(modifier = GlanceModifier.fillMaxWidth()) {
             for (d in 1..7) {
@@ -150,11 +198,18 @@ fun WeekContent(context: Context) {
                         Text("·", style = TextStyle(color = ColorProvider(Color(0xFFD8CDBF)), fontSize = 10.sp))
                     } else {
                         for (c in list) {
+                            val on = ongoingKey != null && courseKey(c) == ongoingKey
                             Text(
                                 c.name,
                                 modifier = GlanceModifier.fillMaxWidth().padding(vertical = 1.dp)
-                                    .background(cardColor(c.name)).padding(3.dp),
-                                style = TextStyle(color = ColorProvider(WIDGET_TEXT_ON_CARD), fontSize = 9.sp),
+                                    .clickable(openCourse(courseKey(c)))
+                                    .background(if (on) WIDGET_ONGOING_BG else cardColor(c.name))
+                                    .padding(3.dp),
+                                style = TextStyle(
+                                    color = ColorProvider(if (on) WIDGET_ONGOING_TEXT else WIDGET_TEXT_ON_CARD),
+                                    fontSize = 9.sp,
+                                    fontWeight = if (on) FontWeight.Bold else FontWeight.Normal
+                                ),
                                 maxLines = 2
                             )
                         }
@@ -165,7 +220,7 @@ fun WeekContent(context: Context) {
     }
 }
 
-/** 小卡片小组件（下一门课） */
+/** 小卡片小组件（正在上 / 下一门课） */
 class NextClassWidget : GlanceAppWidget() {
     override val sizeMode = SizeMode.Exact
     override suspend fun provideGlance(context: Context, id: GlanceId) {
@@ -194,6 +249,9 @@ object WidgetUpdater {
     suspend fun refreshAll(context: Context) {
         runCatching { NextClassWidget().updateAll(context) }
         runCatching { WeekWidget().updateAll(context) }
+        // 每次刷新后重排下一次"到点精准刷新"闹钟：
+        // 这样导入课表 / 手动改课 / 改校区 / 打开 App 后都会按最新课表重新定时。
+        runCatching { WidgetRefreshScheduler.schedule(context) }
     }
 
     /** 非协程上下文（Activity 里）用的便捷入口：后台线程刷新，失败静默 */

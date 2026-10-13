@@ -73,10 +73,17 @@ object JwxtParser {
                 if (col >= C) break
                 val rs = el.attr("rowspan").toIntOrNull()?.coerceAtLeast(1) ?: 1
                 val cs = el.attr("colspan").toIntOrNull()?.coerceAtLeast(1) ?: 1
-                grid[r][col] = el
                 cellInfo["$r,$col"] = el to rs
-                for (dr in 0 until rs) for (dc in 0 until cs)
-                    occupied.add("${r + dr},${col + dc}")
+                // 把格子的 span 区域在网格里铺满（同一 Element 指向多格）。
+                // 关键：表头若用 colspan 合并（如周六跨两列），必须让被覆盖列也拿到该 Element，
+                // 否则 colDay 里那列为空 → 该列下的课整列丢失（"漏某天一两节课"的根因）。
+                for (dr in 0 until rs) for (dc in 0 until cs) {
+                    val rr = r + dr; val cc = col + dc
+                    if (rr < R && cc < C) {
+                        grid[rr][cc] = el
+                        occupied.add("$rr,$cc")
+                    }
+                }
                 col += cs
             }
         }
@@ -103,54 +110,61 @@ object JwxtParser {
             if (pp != null) rowPeriod[pr] = pp
         }
 
-        // 5. 遍历数据格
+        // 5. 遍历数据格（一个格子可能同时放多门课，如单周课+双周课，必须逐门产出）
         val courses = mutableListOf<Course>()
         val seen = HashSet<String>()
         for (dr in headerRow + 1 until R) {
             for (dc in 1 until C) {
                 val info = cellInfo["$dr,$dc"] ?: continue
-                val day = colDay[dc] ?: continue
                 val el = info.first
                 if (!el.tagName().equals("td", true)) continue
                 val text = el.text().trim()
                 if (text.isEmpty()) continue
+                // 星期列优先取格子自带隐藏 input 的精确坐标（jsxsd 的 jx0415zbdiv_<小节>
+                // value 末段形如 "<星期列>-<组号>"）；取不到再退回表头网格推断。
+                // 这条比网格推断可靠：colspan 合并表头时不会串天。
+                val day = cellDayFromInput(el) ?: colDay[dc] ?: continue
 
-                val base = parseCell(el) ?: continue
-                var sp = base.second.first      // startPeriod (nullable)
-                var ep = base.second.second     // endPeriod (nullable)
-
-                if (sp == null) {
-                    val rp = rowPeriod[dr]
-                    if (rp != null) { sp = rp.first; ep = rp.second } else { sp = 1; ep = 1 }
-                }
                 val rs = info.second
-                if (rs >= 2) {
-                    val lastRow = dr + rs - 1
-                    val rLast = rowPeriod[lastRow] ?: rowPeriod[dr]
-                    ep = rLast?.second ?: (sp + rs - 1)
-                }
-                if (ep == null || ep < sp) ep = sp
-                val spF = sp ?: 1
-                val epF = ep ?: spF
+                // 一格多课：逐门解析，各自算节次/周次，分别入表
+                for (base in parseCellMulti(el)) {
+                    var sp = base.second.first
+                    var ep = base.second.second
+                    if (sp == null) {
+                        val rp = rowPeriod[dr]
+                        if (rp != null) { sp = rp.first; ep = rp.second } else { sp = 1; ep = 1 }
+                    }
+                    if (rs >= 2) {
+                        val lastRow = dr + rs - 1
+                        val rLast = rowPeriod[lastRow] ?: rowPeriod[dr]
+                        ep = rLast?.second ?: (sp + rs - 1)
+                    }
+                    if (ep == null || ep < sp) ep = sp
+                    val spF = sp ?: 1
+                    val epF = ep ?: spF
 
-                val name = base.first.name
-                val key = "$name|$day|$spF"
-                if (seen.contains(key)) continue
-                seen.add(key)
-                courses.add(
-                    Course(
-                        id = UUID.randomUUID().toString().take(8),
-                        name = name,
-                        teacher = base.first.teacher,
-                        location = base.first.location,
-                        day = day,
-                        startPeriod = spF,
-                        endPeriod = epF,
-                        weeks = base.first.weeks,
-                        startTime = base.first.startTime,
-                        endTime = base.first.endTime
+                    val c = base.first
+                    if (c.name.isEmpty()) continue
+                    // 去重键含结束节/周次/教师：既能去掉"同课跨大节重复格"，
+                    // 又不会把"同名同天同起始节但周次/教师不同"的两门课误合成一门
+                    val weekSig = c.weeks.sorted().joinToString(",")
+                    val key = "${c.name}|$day|$spF|$epF|$weekSig|${c.teacher}"
+                    if (!seen.add(key)) continue
+                    courses.add(
+                        Course(
+                            id = UUID.randomUUID().toString().take(8),
+                            name = c.name,
+                            teacher = c.teacher,
+                            location = c.location,
+                            day = day,
+                            startPeriod = spF,
+                            endPeriod = epF,
+                            weeks = c.weeks,
+                            startTime = c.startTime,
+                            endTime = c.endTime
+                        )
                     )
-                )
+                }
             }
         }
 
@@ -210,21 +224,20 @@ object JwxtParser {
         var endTime: String = ""
     )
 
-    private fun parseCell(el: Element): Pair<CellInfo, Pair<Int?, Int?>>? {
-        val lines = el.html()
+    /**
+     * 解析一个课程块（td 里一门课对应的 div 内容）-> (CellInfo, startPeriod to endPeriod)。
+     * 与 web/js/parser.js 的 parseCellBlock 保持同步。
+     */
+    private fun parseCellBlock(blockHtml: String): Pair<CellInfo, Pair<Int?, Int?>>? {
+        val lines = blockHtml
             .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
             .replace(Regex("</(div|p|td|li|span|font|a|b|strong|i|em)>", RegexOption.IGNORE_CASE), "\n")
             .replace(Regex("<[^>]+>"), "")
             .replace("&nbsp;", " ").replace("&amp;", "&")
-            // 强智新版格子内有 kbcontent1/kbcontent 两个隐藏 div，内容重复；
-            // 去重可避免重复行顶掉真老师名、或把周次行漏进地点
             .split('\n').map { norm(it) }.filter { it.isNotEmpty() }.distinct()
-            // 强智格子里的"通知单编号/班级/备注"管理元数据、横线分隔行、
-            // "(讲课:16)"/"(舞龙)"等括号备注都不是课程字段，直接丢弃
             .filter {
                 !(it.startsWith("通知单编号") || it.startsWith("班级") || it.startsWith("备注") ||
                         it.startsWith("学分") ||
-                        // 个人中心课表页的卡片名会被服务端截断成 "电气控制与..."，丢弃这种残名
                         Regex("[.．…]{2,}$").containsMatchIn(it) ||
                         Regex("^[-—=_]{3,}").containsMatchIn(it) ||
                         Regex("^\\(.*\\)$").matches(it))
@@ -239,17 +252,25 @@ object JwxtParser {
             val l = lines[i]
             val pl = parsePeriodList(l)
             if (pl != null) {
-                // 一行里就是节次（可能还带周次）；消费掉，避免"01~02~03节"之类漏进课名/教室
                 if (periodList == null) {
                     periodList = pl
-                    // 先剥掉 "01~02~03小节" 再取周次，避免小节号混进周次
-                    val wk = parseWeeks(l.replace(Regex("\\d+(?:\\s*[-~—–]\\s*\\d+)+\\s*小节"), " "))
-                    if (wk.isNotEmpty() && c.weeks.isEmpty()) c.weeks = wk
+                    // 只有该行确实含"周"时才取周次（如 "01~02~03小节 第3-8周"）；
+                    // 否则纯节次行 "01~02~03节" 会被误当成周次 [1,2,3]。
+                    if (l.contains("周")) {
+                        val wk = parseWeeks(l.replace(Regex("\\d+(?:\\s*[-~—–]\\s*\\d+)+\\s*小节"), " "))
+                        if (wk.isNotEmpty() && c.weeks.isEmpty()) c.weeks = wk
+                    }
+                    // 该行去掉节次/周次后若还残留课名，单独取出来；否则整行消费会让课名丢失
+                    val residual = l
+                        .replace(Regex("\\[[^\\]]*\\d+[^\\]]*节[^\\]]*\\]"), " ")
+                        .replace(Regex("\\d{1,2}(?:\\s*[-~—–]\\s*\\d{1,2}){1,3}\\s*小?节"), " ")
+                        .replace(Regex("\\d+(?:\\s*[-~—–,]\\s*\\d+)*\\s*\\(?周\\)?"), " ")
+                    val rn = norm(residual)
+                    if (rn.isNotEmpty() && c.name.isEmpty()) c.name = rn
                 }
                 used[i] = true; continue
             }
             if (isWeekLine(l)) {
-                // 周次行一律消费掉（首个设置周次，其余丢弃），防止漏进地点
                 if (c.weeks.isEmpty()) c.weeks = parseWeeks(l)
                 used[i] = true; continue
             }
@@ -267,7 +288,7 @@ object JwxtParser {
         if (periodList != null) { sp = periodList.first(); ep = periodList.last() }
 
         val rest = lines.filterIndexed { idx, _ -> !used[idx] }
-        if (rest.isNotEmpty()) {
+        if (rest.isNotEmpty() && c.name.isEmpty()) {
             c.name = rest[0]
             for (j in 1 until rest.size) {
                 val line = rest[j]
@@ -277,13 +298,61 @@ object JwxtParser {
                 val looksTeacher = Regex("(老师|教授|副教授|讲师|博士)").containsMatchIn(line) ||
                         Regex("^[\\u4e00-\\u9fa5·、,\\s]{2,12}$").matches(line)
                 if (c.location.isEmpty() && looksPlace && !looksTeacher) c.location = line
-                else if (c.teacher.isEmpty() && (looksTeacher || (c.location.isEmpty() && !looksPlace)))
-                    c.teacher = if (c.teacher.isEmpty()) line else c.teacher + "、" + line
+                else if (c.teacher.isEmpty() && (looksTeacher || (c.location.isEmpty() && !looksPlace))) c.teacher = line
                 else if (c.location.isEmpty() && c.teacher.isEmpty()) c.teacher = line
             }
         }
         if (c.name.isEmpty()) return null
         return c to (sp to ep)
+    }
+
+    /**
+     * 解析整个 td，可能含多门课（正方/强智会把单周课+双周课、分组课等塞进同一格）。
+     * 优先按 div.item-box（个人中心页，每门课一个）逐门解析，其次按 div.kbcontent1（标准课表页）逐门解析，
+     * 都取不到则退回整格单课解析。与 web/js/parser.js 的 parseCellMulti 保持同步。
+     */
+    private fun parseCellMulti(el: Element): List<Pair<CellInfo, Pair<Int?, Int?>>> {
+        // 个人中心课表页（mainV_index_loadkb）：每门课一个 div.item-box（完整课名），
+        // 同一 td 里还并排一个 span.box（服务端截断的课名 + 教师 + 周次），是重复信息。
+        // 必须优先按 item-box 逐门解析，否则整格解析会把浮层里的"学分：X"混进教室字段。
+        val itemBoxes = el.select("div.item-box")
+        if (itemBoxes.size >= 1) {
+            val out = ArrayList<Pair<CellInfo, Pair<Int?, Int?>>>()
+            for (b in itemBoxes) {
+                val parsed = parseCellBlock(b.html()) ?: continue
+                if (parsed.first.name.isEmpty()) continue
+                out.add(parsed)
+            }
+            if (out.isNotEmpty()) return out
+        }
+        // 强智标准课表页：每门课一个 div.kbcontent1（同格多门课时逐门产出）
+        val blocks = el.select("div.kbcontent1")
+        if (blocks.size >= 2) {
+            val out = ArrayList<Pair<CellInfo, Pair<Int?, Int?>>>()
+            for (b in blocks) {
+                val parsed = parseCellBlock(b.html()) ?: continue
+                if (parsed.first.name.isEmpty()) continue
+                out.add(parsed)
+            }
+            if (out.isNotEmpty()) return out
+        }
+        val one = parseCellBlock(el.html()) ?: return emptyList()
+        return listOf(one)
+    }
+
+    /**
+     * 从格子里 jsxsd 的隐藏 input（name=jx0415zbdiv_<小节>，value="HASH-<星期列>-<组号>"）
+     * 读出星期列。取不到返回 null，调用方退回表头网格推断。
+     * 与 web/js/parser.js 的 cellDayFromInput 保持同步。
+     */
+    private fun cellDayFromInput(el: Element): Int? {
+        for (inp in el.select("input[name^=jx0415zbdiv_]")) {
+            val v = inp.attr("value")
+            val m = Regex("-(\\d+)-(\\d+)$").find(v.trim()) ?: continue
+            val d = m.groupValues[1].toIntOrNull() ?: continue
+            if (d in 1..7) return d
+        }
+        return null
     }
 
     // ---- 工具 ----
@@ -362,3 +431,4 @@ object JwxtParser {
         return ""
     }
 }
+

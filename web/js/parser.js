@@ -144,10 +144,13 @@
       if (pl && !periodList) {
         periodList = pl;
         if (course.startPeriod == null) { course.startPeriod = pl[0]; course.endPeriod = pl[pl.length - 1]; }
-        // 该行可能同时带周次；先剥掉 "01~02~03小节" 再取周次，避免小节号混进周次
-        var wkSame = parseWeeks(String(l).replace(/\d+(?:\s*[-~—–]\s*\d+)+\s*小节/g, ' '));
-        if (wkSame && !course.weeks) course.weeks = wkSame;
-        used[i] = true; continue;
+        // 该行可能同时带周次；先剥掉 "01~02~03小节" 再取周次，避免小节号混进周次。
+        // 但只有该行确实含"周"时才取，否则纯节次行 "01~02~03节" 会被误当成周次 [1,2,3]
+        // （与 JwxtParser.kt 的 parseCellBlock 保持同步）。
+        if (/周/.test(l)) {
+          var wkSame = parseWeeks(String(l).replace(/\d+(?:\s*[-~—–]\s*\d+)+\s*小节/g, ' '));
+          if (wkSame && !course.weeks) course.weeks = wkSame;
+        }
       }
       // 2) 周次："1-16周" / "(1-8,10周)" / "单周"
       // 周次行一律消费掉（首个设置周次，其余丢弃），防止漏进地点
@@ -251,10 +254,15 @@
         var el = kids[ki];
         var rs = parseInt(el.getAttribute('rowspan') || '1', 10) || 1;
         var cs = parseInt(el.getAttribute('colspan') || '1', 10) || 1;
-        grid[rr][col] = el;
         cellInfo[rr + ',' + col] = { cell: el, rs: rs };
+        /* 把 span 区域在网格里铺满（同一 Element 指向多格）。
+           关键：表头若用 colspan 合并（如周六跨两列），必须让被覆盖列也拿到该 Element，
+           否则 colDay 里那列为空 → 该列下的课整列丢失（"漏某天一两节课"的根因）。 */
         for (var dr = 0; dr < rs; dr++)
-          for (var dc = 0; dc < cs; dc++) occupied[(rr + dr) + ',' + (col + dc)] = true;
+          for (var dc = 0; dc < cs; dc++) {
+            var gr2 = rr + dr, gc2 = col + dc;
+            if (gr2 < R && gc2 < C) { grid[gr2][gc2] = el; occupied[gr2 + ',' + gc2] = true; }
+          }
         col += cs;
       }
     }
@@ -288,36 +296,42 @@
       for (var dc2 = 1; dc2 < C; dc2++) {
         var info = cellInfo[dr2 + ',' + dc2];
         if (!info) continue;                    // 该位置不是单元格左上角（被合并覆盖）
-        var day = colDay[dc2];
-        if (!day) continue;                      // 不是星期列
         var td = info.cell;
         if (!td || (td.tagName || '').toUpperCase() !== 'TD') continue;
         var text = norm(td.innerText || td.textContent);
         if (!text || text.length < 1) continue;
-
-        var course = parseCell(td.innerHTML);
-        if (!course) continue;
-        course.day = day;
-
-        // 节次：优先单元格自带，其次行首"第X节"，再次默认上延
-        var rp = rowPeriod[dr2];
-        if (course.startPeriod == null) {
-          if (rp) { course.startPeriod = rp.start; course.endPeriod = rp.end; }
-          else { course.startPeriod = 1; course.endPeriod = 1; }
+        // 星期列优先取格子自带隐藏 input 的精确坐标；取不到再退回表头网格推断。
+        // 这条比网格推断可靠：表头 colspan 合并时不会串天（与 JwxtParser.kt 保持同步）。
+        var day = cellDayFromInput(td) || colDay[dc2];
+        if (!day) continue;
+        // 一格多课：逐门解析，各自算节次/周次，分别入表（与 JwxtParser.kt 保持同步）
+        var parsedList = parseCellMulti(td);
+        for (var pi = 0; pi < parsedList.length; pi++) {
+          var course = parsedList[pi];
+          if (!course) continue;
+          course.day = day;
+          // 节次：优先单元格自带，其次行首"第X节"，再次默认上延
+          var rp = rowPeriod[dr2];
+          if (course.startPeriod == null) {
+            if (rp) { course.startPeriod = rp.start; course.endPeriod = rp.end; }
+            else { course.startPeriod = 1; course.endPeriod = 1; }
+          }
+          if (info.rs >= 2) {
+            // 跨行：结束节次 = 最后跨越行的节次
+            var lastRow = dr2 + info.rs - 1;
+            var rLast = rowPeriod[lastRow] || rowPeriod[dr2];
+            if (rLast) course.endPeriod = rLast.end;
+            else course.endPeriod = course.startPeriod + info.rs - 1;
+          }
+          if (course.endPeriod == null || course.endPeriod < course.startPeriod) course.endPeriod = course.startPeriod;
+          // 去重键含结束节/周次/教师：既能去掉"同课跨大节重复格"，
+          // 又不会把"同名同天同起始节但周次/教师不同"的两门课误合成一门
+          var wk = (course.weeks || []).slice().sort(function (a, b) { return a - b; }).join(',');
+          var key = course.name + '|' + course.day + '|' + course.startPeriod + '|' + course.endPeriod + '|' + wk + '|' + (course.teacher || '');
+          if (seen[key]) continue;
+          seen[key] = true;
+          courses.push(course);
         }
-        if (info.rs >= 2) {
-          // 跨行：结束节次 = 最后跨越行的节次
-          var lastRow = dr2 + info.rs - 1;
-          var rLast = rowPeriod[lastRow] || rowPeriod[dr2];
-          if (rLast) course.endPeriod = rLast.end;
-          else course.endPeriod = course.startPeriod + info.rs - 1;
-        }
-        if (course.endPeriod == null || course.endPeriod < course.startPeriod) course.endPeriod = course.startPeriod;
-
-        var key = course.name + '|' + course.day + '|' + course.startPeriod;
-        if (seen[key]) continue;
-        seen[key] = true;
-        courses.push(course);
       }
     }
 
@@ -373,6 +387,56 @@
   }
 
   /**
+   * 解析整个 td，可能含多门课（正方/强智会把单周课+双周课、分组课等塞进同一格）。
+   * 优先按 div.item-box（个人中心页，每门课一个）逐门解析，其次按 div.kbcontent1（标准课表页）逐门解析，
+   * 都取不到则退回整格单课解析。与 JwxtParser.kt 的 parseCellMulti 保持同步（改一处必须同步另一处）。
+   */
+  function parseCellMulti(td) {
+    // 个人中心课表页：每门课一个 div.item-box（完整课名），
+    // 同一 td 里还并排一个 span.box（服务端截断的课名 + 教师 + 周次），是重复信息。
+    // 必须优先按 item-box 逐门解析，否则整格解析会把浮层里的"学分：X"混进教室字段。
+    var itemBoxes = td.querySelectorAll('div.item-box');
+    if (itemBoxes.length >= 1) {
+      var out = [];
+      for (var a = 0; a < itemBoxes.length; a++) {
+        var pa = parseCell(itemBoxes[a].innerHTML);
+        if (!pa || !pa.name) continue;
+        out.push(pa);
+      }
+      if (out.length) return out;
+    }
+    // 强智标准课表页：每门课一个 div.kbcontent1（同格多门课时逐门产出）
+    var blocks = td.querySelectorAll('div.kbcontent1');
+    if (blocks.length >= 2) {
+      var out2 = [];
+      for (var b = 0; b < blocks.length; b++) {
+        var pb = parseCell(blocks[b].innerHTML);
+        if (!pb || !pb.name) continue;
+        out2.push(pb);
+      }
+      if (out2.length) return out2;
+    }
+    var one = parseCell(td.innerHTML);
+    return one ? [one] : [];
+  }
+  /**
+   * 从格子里 jsxsd 的隐藏 input（name=jx0415zbdiv_<小节>，value="HASH-<星期列>-<组号>"）
+   * 读出星期列。取不到返回 0，调用方退回表头网格推断。
+   * 与 JwxtParser.kt 的 cellDayFromInput 保持同步（改一处必须同步另一处）。
+   */
+  function cellDayFromInput(td) {
+    if (!td || !td.querySelectorAll) return 0;
+    var inps = td.querySelectorAll('input[name^=jx0415zbdiv_]');
+    for (var i = 0; i < inps.length; i++) {
+      var v = (inps[i].getAttribute('value') || '').trim();
+      var m = v.match(/-(\d+)-(\d+)$/);
+      if (!m) continue;
+      var d = parseInt(m[1], 10);
+      if (d >= 1 && d <= 7) return d;
+    }
+    return 0;
+  }
+  /**
    * 从个人中心课表（framework/mainV_index_loadkb.htmlx）HTML 提取 课名→学分。
    * 该页悬停课程卡片显示的浮层就是 div.item-box，其中带「学分：X」。
    * 与 JwxtParser.kt 的 parseCredits 保持同步（改一处必须同步另一处）。
@@ -405,9 +469,11 @@
     parseRowPeriod: parseRowPeriod,
     parsePeriodList: parsePeriodList,
     parseCell: parseCell,
-    norm: norm
+    parseCellMulti: parseCellMulti,
+    cellDayFromInput: cellDayFromInput
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   global.NJFUScheduleParser = api;
 })(typeof window !== 'undefined' ? window : this);
+

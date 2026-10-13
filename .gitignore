@@ -24,3 +24,8 @@ apk/app/src/test/resources/kb_loadkb.html
 
 # 临时中转文件夹（上传用，不入库）
 待上传/
+
+# 本机测试中转产物（截图、抓包 XML、导出的 prefs），不入库
+screenshots/
+apk/njfu_schedule.xml
+apk/prefs_schedule.json

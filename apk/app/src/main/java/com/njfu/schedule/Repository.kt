@@ -190,7 +190,89 @@ object Repository {
         saveSchedule(cur.copy(courses = out))
     }
 
-    /** 学分三轮抓取合并：仅采纳三轮结果完全一致的课名（防爬错） */
+    /**
+     * 同名课程同步修改：本周内所有同名课当作"同一门课"一起改。
+     * 用户在任意一节上点编辑 → 改名称/老师/教室/时段，本周内其余同名课同步更新。
+     *
+     * - 名称/老师/教室：组内所有课一起改。
+     * - 时段（slots）：作为整门课的新时段，套用到组内所有课（多节 → 生成多条，day/节次来自 slots）。
+     * - onlyThisWeek=true：其它周次保留（同步改名/师/室），只把本周换成新时段。
+     * - slots 为空（仅整周安排会这样）：只改名称/老师/教室，不动时段。
+     *
+     * 组内课程 id 会被替换（anchor 复用原 id，其余新建），全部标 edited=true。
+     */
+    fun editCourseSameName(
+        course: Course, name: String, teacher: String, location: String,
+        slots: List<Triple<Int, Int, Int>>, weeks: List<Int>, onlyThisWeek: Boolean, currentWeek: Int
+    ) {
+        val cur = loadSchedule()
+        val group = sameNameCoursesThisWeek(cur, course, currentWeek)
+        if (group.size <= 1) {
+            editCourse(course, name, teacher, location, slots, weeks, onlyThisWeek, currentWeek)
+            return
+        }
+        val groupIds = group.map { it.id }.toSet()
+        val anchor = group.firstOrNull { it.id == course.id } ?: group.first()
+        val nm = name.trim().ifEmpty { anchor.name }
+        val tc = teacher.trim()
+        val lo = location.trim()
+        val ws = weeks.filter { it in 1..53 }.distinct().sorted()
+        val norm = normSlots(slots)
+
+        val replacements = ArrayList<Course>()
+        when {
+            norm.isEmpty() -> {
+                // 只改名称/老师/教室，不动时段
+                group.forEach {
+                    replacements.add(
+                        it.copy(
+                            name = nm, teacher = tc, location = lo,
+                            weeks = if (it.day == 0) ws else it.weeks, edited = true
+                        )
+                    )
+                }
+            }
+            !onlyThisWeek -> {
+                norm.forEachIndexed { i, sl ->
+                    replacements.add(
+                        Course(
+                            id = if (i == 0) anchor.id else UUID.randomUUID().toString().take(8),
+                            name = nm, teacher = tc, location = lo,
+                            day = sl.first, startPeriod = sl.second, endPeriod = sl.third,
+                            weeks = ws, edited = true
+                        )
+                    )
+                }
+            }
+            else -> {
+                // 仅本周：其它周次保留（同步改名/师/室），本周换成新时段
+                group.forEach { g ->
+                    val origWeeks = if (g.weeks.isEmpty()) (1..53).toList() else g.weeks
+                    val remain = origWeeks.filter { it != currentWeek }
+                    if (remain.isNotEmpty()) {
+                        replacements.add(
+                            g.copy(
+                                name = nm, teacher = tc, location = lo,
+                                weeks = remain.sorted(), edited = true
+                            )
+                        )
+                    }
+                }
+                norm.forEach { sl ->
+                    replacements.add(
+                        Course(
+                            id = UUID.randomUUID().toString().take(8),
+                            name = nm, teacher = tc, location = lo,
+                            day = sl.first, startPeriod = sl.second, endPeriod = sl.third,
+                            weeks = listOf(currentWeek), edited = true
+                        )
+                    )
+                }
+            }
+        }
+        val out = cur.courses.filter { it.id !in groupIds } + replacements
+        saveSchedule(cur.copy(courses = out))
+    }
     fun mergeCreditsRounds(rounds: List<Map<String, String>>): Map<String, String> {
         if (rounds.size != 3) return emptyMap()
         val first = rounds[0]
@@ -292,6 +374,17 @@ object Repository {
     var showOtherWeekCourses: Boolean
         get() = sp.getBoolean("show_other_week", false)
         set(v) { sp.edit().putBoolean("show_other_week", v).apply() }
+
+    /** 自定义背景图片：本机图片的 content:// URI 字符串；空=不使用（纯色背景）。
+     *  仅存本机，不上传。用户可在设置里上传/更换/清除。 */
+    var backgroundImageUri: String
+        get() = sp.getString("bg_image_uri", "") ?: ""
+        set(v) { sp.edit().putString("bg_image_uri", v).apply() }
+
+    /** 背景图片明暗遮罩强度 0-100（越高越淡，保证课表文字看得清）；默认 60 */
+    var backgroundDim: Int
+        get() = sp.getInt("bg_dim", 60)
+        set(v) { sp.edit().putInt("bg_dim", v.coerceIn(0, 100)).apply() }
 
     fun hasCredentials(): Boolean = user.isNotEmpty() && savedPass && pass.isNotEmpty()
 

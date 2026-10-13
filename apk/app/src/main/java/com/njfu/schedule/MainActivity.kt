@@ -64,6 +64,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import android.graphics.BitmapFactory
 import java.net.HttpURLConnection
 import java.net.URL
 import java.time.LocalDate
@@ -409,11 +413,19 @@ fun ScheduleApp(refreshState: MutableState<Int>, openCourseKey: MutableState<Str
         else
             lightColorScheme(primary = th.accent, background = th.bg, surface = th.surface)
     ) {
+    // 自定义背景图：用户上传的本机图片垫在最底层，上面盖一层半透明遮罩保证文字可读。
+    // 未设置时就是原来的纯色背景（th.bg）。
+    val bgUri = remember(refreshState.value) { Repository.backgroundImageUri }
+    val bgDim = remember(refreshState.value) { Repository.backgroundDim }
+    Box(Modifier.fillMaxSize().background(th.bg)) {
+        if (bgUri.isNotEmpty()) {
+            AppBackgroundImage(uri = bgUri, dim = bgDim)
+        }
     // 注意：这里【不能】用 key(refreshState.value) 把整棵树重建——那会重置课表翻周位置、
     // 纵向滚动、正在输入的弹窗，表现为"滑到某周后（后台刷新一来）内容突然变了/实习消失"。
     // 改为就地更新 schedule（下方各 remember 都以 refreshState 为 key 重新读取设置）。
     Scaffold(
-        containerColor = th.bg,
+        containerColor = if (bgUri.isEmpty()) th.bg else Color.Transparent,
         topBar = {
             TopAppBar(
                 title = {
@@ -654,11 +666,17 @@ fun ScheduleApp(refreshState: MutableState<Int>, openCourseKey: MutableState<Str
     // 编辑课程：可改节次 / 周次，并选择只改"本周"还是"整个学期"
     editTarget?.let { editing ->
         val cur = schedule.courses.firstOrNull { it.id == editing.id } ?: editing
+        val sameName = sameNameCoursesThisWeek(schedule, cur, currentWeek)
         EditCourseDialog(
             course = cur, currentWeek = currentWeek, th = th,
+            sameNameCourses = sameName,
             onDismiss = { editTarget = null },
-            onConfirm = { name, teacher, location, slots, weeks, onlyThisWeek ->
-                Repository.editCourse(cur, name, teacher, location, slots, weeks, onlyThisWeek, currentWeek)
+            onConfirm = { name, teacher, location, slots, weeks, onlyThisWeek, syncSameName ->
+                if (syncSameName) {
+                    Repository.editCourseSameName(cur, name, teacher, location, slots, weeks, onlyThisWeek, currentWeek)
+                } else {
+                    Repository.editCourse(cur, name, teacher, location, slots, weeks, onlyThisWeek, currentWeek)
+                }
                 schedule = Repository.loadSchedule()
                 editTarget = null
                 detail = null
@@ -684,7 +702,34 @@ fun ScheduleApp(refreshState: MutableState<Int>, openCourseKey: MutableState<Str
     if (showTutorial) {
         TutorialDialog(th = th, onDone = { showTutorial = false })
     }
+    }   // Box（背景图层）
+    }   // MaterialTheme
+}
+
+/**
+ * 自定义背景图：把用户选择的本机图片铺满，并盖一层"按主题色/明暗"的半透明遮罩，
+ * 保证上面的课表文字仍然清晰。uri 读取失败（图片被删/权限失效）就静默不画，退回纯色背景。
+ */
+@Composable
+fun AppBackgroundImage(uri: String, dim: Int) {
+    val context = LocalContext.current
+    val bitmap = remember(uri) {
+        runCatching {
+            context.contentResolver.openInputStream(Uri.parse(uri))?.use {
+                BitmapFactory.decodeStream(it)
+            }
+        }.getOrNull()
     }
+    if (bitmap == null) return
+    Image(
+        bitmap = bitmap.asImageBitmap(),
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        modifier = Modifier.fillMaxSize()
+    )
+    // 遮罩：dim 越高越不透明（越淡），保证文字可读
+    val a = (dim.coerceIn(0, 100) / 100f)
+    Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = a * 0.85f)))
 }
 
 @Composable
@@ -1092,7 +1137,8 @@ private data class GridSeg(val course: Course?, val start: Int, val span: Int, v
 private fun daySegments(list: List<Course>, sub: List<Course> = emptyList()): List<GridSeg> {
     val segs = mutableListOf<GridSeg>()
     var cursor = 1
-    for (c in list.sortedBy { it.startPeriod }) {
+    // 同名且上下相邻的课先合并成一个跨节大格（仅显示层；不改数据）
+    for (c in mergeSameNameVertical(list)) {
         val start = maxOf(c.startPeriod, cursor)
         val end = minOf(c.endPeriod, 11)
         if (end < start) continue
@@ -1319,9 +1365,11 @@ fun EditCourseDialog(
     course: Course,
     currentWeek: Int,
     th: AppColors,
+    sameNameCourses: List<Course> = listOf(course),
     onDismiss: () -> Unit,
-    onConfirm: (name: String, teacher: String, location: String, slots: List<Triple<Int, Int, Int>>, weeks: List<Int>, onlyThisWeek: Boolean) -> Unit
+    onConfirm: (name: String, teacher: String, location: String, slots: List<Triple<Int, Int, Int>>, weeks: List<Int>, onlyThisWeek: Boolean, syncSameName: Boolean) -> Unit
 ) {
+    val sameNameCount = sameNameCourses.size
     var name by remember { mutableStateOf(course.name) }
     var teacher by remember { mutableStateOf(course.teacher) }
     var location by remember { mutableStateOf(course.location) }
@@ -1334,6 +1382,7 @@ fun EditCourseDialog(
     var weeksText by remember { mutableStateOf(weeksToText(course.weeks)) }
     var wholeTerm by remember { mutableStateOf(false) }
     var thisWeekOnly by remember { mutableStateOf(false) }
+    var syncSameName by remember { mutableStateOf(sameNameCount > 1) }
     val valid = name.isNotBlank() && (course.day == 0 || slots.isNotEmpty())
 
     MacDialog(color = th.surface, onDismissRequest = onDismiss) { close ->
@@ -1381,6 +1430,28 @@ fun EditCourseDialog(
             } else {
                 Text("只改第 $currentWeek 周，其余周次不变。", fontSize = 11.sp, color = th.textSecondary)
             }
+            if (sameNameCount > 1) {
+                Spacer(Modifier.height(10.dp))
+                // 同名课程同步修改：默认勾选。勾上后，改名称/老师/教室/时段会同步到本周所有同名课；
+                // 时段选择器预填"整门课"的时段（所有同名课的并集），方便一起调整。
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { syncSameName = !syncSameName }) {
+                    Checkbox(checked = syncSameName, onCheckedChange = { syncSameName = it })
+                    Text("同步修改本周所有「${course.name}」课（共 $sameNameCount 节）", fontSize = 13.sp, color = th.textPrimary)
+                }
+                if (syncSameName) {
+                    Text(
+                        "本周这几节会一起改（名称/老师/教室/时段）。取消勾选则只改这一节。",
+                        fontSize = 11.sp, color = th.textSecondary
+                    )
+                }
+            }
+            // 勾选"同步"时把时段选择器预填成本周整门课的并集（首次进入即对齐）
+            LaunchedEffect(syncSameName) {
+                if (syncSameName && course.day != 0) {
+                    val u = unionSlots(sameNameCourses)
+                    if (u.isNotEmpty()) slots = u
+                }
+            }
             Spacer(Modifier.height(14.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = close) { Text("取消", color = th.textSecondary) }
@@ -1389,7 +1460,7 @@ fun EditCourseDialog(
                     onConfirm(
                         name, teacher, location, slotsToRuns(slots),
                         if (thisWeekOnly) listOf(currentWeek) else parseWeeksText(weeksText),
-                        thisWeekOnly
+                        thisWeekOnly, syncSameName && sameNameCount > 1
                     )
                 }) { Text("保存") }
             }
@@ -1460,6 +1531,22 @@ fun SettingsDialog(
     var startSunday by remember { mutableStateOf(Repository.weekStartSunday) }
     var checkUp by remember { mutableStateOf(Repository.checkUpdate) }
     var showOther by remember { mutableStateOf(Repository.showOtherWeekCourses) }
+    var bgUri by remember { mutableStateOf(Repository.backgroundImageUri) }
+    var bgDim by remember { mutableStateOf(Repository.backgroundDim) }
+
+    // 选图器：系统图片选择器（无需存储权限，返回可读 content:// URI）
+    val bgPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            bgUri = uri.toString()
+        }
+    }
 
     MacDialog(color = th.surface, onDismissRequest = onDone) { close ->
         Column {
@@ -1553,6 +1640,38 @@ fun SettingsDialog(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(showOther, { showOther = it })
                     Text("显示非本周课程（半透明）", fontSize = 13.sp, color = th.textPrimary)
+                }
+
+                SectionTitle("背景图片", th.accent)
+                Text("上传一张自己的图片做课表背景（仅存本机，不上传）。", fontSize = 12.sp, color = th.textSecondary)
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(onClick = {
+                        bgPicker.launch(
+                            androidx.activity.result.PickVisualMediaRequest(
+                                ActivityResultContracts.PickVisualMedia.ImageOnly
+                            )
+                        )
+                    }) { Text(if (bgUri.isEmpty()) "上传图片" else "更换图片", fontSize = 13.sp) }
+                    if (bgUri.isNotEmpty()) {
+                        TextButton(onClick = { bgUri = "" }) {
+                            Text("清除", fontSize = 13.sp, color = th.textSecondary)
+                        }
+                    }
+                }
+                if (bgUri.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Text("背景清晰度（往右越淡、文字越清楚）", fontSize = 12.sp, color = th.textSecondary)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Slider(
+                            value = bgDim.toFloat(),
+                            onValueChange = { bgDim = it.toInt() },
+                            valueRange = 0f..100f,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text("$bgDim%", fontSize = 12.sp, color = th.textSecondary)
+                    }
                 }
 
                 SectionTitle("更新", th.accent)
@@ -1670,6 +1789,8 @@ fun SettingsDialog(
                     Repository.weekStartSunday = startSunday
                     Repository.checkUpdate = checkUp
                     Repository.showOtherWeekCourses = showOther
+                    Repository.backgroundImageUri = bgUri
+                    Repository.backgroundDim = bgDim
                     Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
                     close()
                 }) { Text("保存") }

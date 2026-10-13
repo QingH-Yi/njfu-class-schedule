@@ -1,6 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">南林课程表</string>
-    <string name="widget_next_desc">下一节课</string>
-    <string name="widget_week_desc">本周课表</string>
 </resources>

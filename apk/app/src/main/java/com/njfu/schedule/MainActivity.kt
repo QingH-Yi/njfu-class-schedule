@@ -84,8 +84,6 @@ import java.util.Calendar
 class MainActivity : ComponentActivity() {
 
     private val refreshSignal = mutableStateOf(0)
-    /** 由桌面小组件传入的"要打开的课程"标识（名称|星期|起始节）；null=不打开详情 */
-    private val openCourseKey = mutableStateOf<String?>(null)
     private var bgWebView: WebView? = null
     private var bgGrab: BgGrab? = null
 
@@ -105,9 +103,7 @@ class MainActivity : ComponentActivity() {
         val upgraded = Repository.appVersion != 0 && Repository.appVersion != verCode
         Repository.appVersion = verCode
 
-        // 小组件点课程卡片进来时带 EXTRA_COURSE_KEY：先取出来，交给 ScheduleApp 打开详情
-        openCourseKey.value = intent?.getStringExtra(EXTRA_COURSE_KEY)
-        setContent { ScheduleApp(refreshSignal, openCourseKey) }
+        setContent { ScheduleApp(refreshSignal) }
         // 打开时自动更新课表（尽力而为，依赖已保存的登录会话）；
         // 覆盖安装后的第一次打开即使关了自动更新也强制抓一次，保证数据是干净的
         if (Repository.hasCredentials() && (Repository.autoUpdate || upgraded)) {
@@ -199,19 +195,6 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    /** 已在前台时再次点小组件卡片：onNewIntent 收到新的课程标识 */
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        openCourseKey.value = intent.getStringExtra(EXTRA_COURSE_KEY)
-    }
-
-    /** 打开/回到 App 时刷新桌面小组件（覆盖"导入课表返回""改设置"等场景） */
-    override fun onStart() {
-        super.onStart()
-        WidgetUpdater.refreshAllAsync(this)
-    }
-
     inner class BgGrab {
         private val tableRounds = ArrayList<String>()
         private val tableResults = ArrayList<ParseResult>()
@@ -240,7 +223,6 @@ class MainActivity : ComponentActivity() {
             Repository.replaceCourses(r.courses, r.term, keepEdited = Repository.editedCourses().isNotEmpty())
             runOnUiThread {
                 refreshSignal.value++
-                WidgetUpdater.refreshAllAsync(this@MainActivity)
                 startCreditRounds(r.term.ifEmpty { Repository.loadSchedule().term })
             }
         }
@@ -292,8 +274,6 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
-        /** 桌面小组件"点课程→打开详情"用的 Intent extra：courseKey（名称|星期|起始节） */
-        const val EXTRA_COURSE_KEY = "com.njfu.schedule.extra.COURSE_KEY"
         /** GitHub 用户名（改名后统一在这里改） */
         const val GITHUB_USER = "QingH-Yi"
         /** 站点主页 */
@@ -360,7 +340,7 @@ var h=walk(window,0)||document.documentElement.outerHTML;AndroidGrab.receive(h);
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ScheduleApp(refreshState: MutableState<Int>, openCourseKey: MutableState<String?> = mutableStateOf(null)) {
+fun ScheduleApp(refreshState: MutableState<Int>) {
     val context = LocalContext.current
     var schedule by remember { mutableStateOf(Repository.loadSchedule()) }
     var showSettings by remember { mutableStateOf(false) }
@@ -372,18 +352,6 @@ fun ScheduleApp(refreshState: MutableState<Int>, openCourseKey: MutableState<Str
 
     // 后台自动更新完成后刷新界面
     LaunchedEffect(refreshState.value) { schedule = Repository.loadSchedule() }
-
-    // 桌面小组件点课程卡片进来（或已在前台又点了一次）：按 courseKey 找到那门课并打开详情。
-    // courseKey = 名称|星期|起始节，整表覆盖后 id 会变，所以不能用 id 匹配。
-    LaunchedEffect(openCourseKey.value, schedule.courses) {
-        val k = openCourseKey.value ?: return@LaunchedEffect
-        val target = schedule.courses.firstOrNull { courseKey(it) == k }
-            ?: schedule.courses.firstOrNull { it.name == k.substringBefore('|') }
-        if (target != null) {
-            detail = target
-            openCourseKey.value = null   // 消费掉，避免反复弹出
-        }
-    }
 
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -801,8 +769,7 @@ fun TimetableView(
     val showOtherWeek = remember(settingsKey) { Repository.showOtherWeekCourses }
     val startSunday = remember(settingsKey) { Repository.weekStartSunday }
     val dayCols = remember(startSunday) { if (startSunday) listOf(7, 1, 2, 3, 4, 5, 6) else (1..7).toList() }
-    val dateIdx: (Int) -> Int = if (startSunday)
-        { i -> if (i == 0) 6 else i - 1 } else { i -> i }
+    // dates 已按显示顺序返回（周日起点=周日..周六），列 i 的日期就是 dates[i]，无需再旋转
     // 日期条对齐点：该周第一天在日期条上的 index（周日起点=该周周日，周一起点=该周周一）
     val weekStartIndex: (Int) -> Int = if (startSunday)
         { w -> 6 + (w - 1) * 7 } else { w -> 7 + (w - 1) * 7 }
@@ -963,7 +930,9 @@ fun TimetableView(
                 }
                 val byDay = remember(inWeek) { inWeek.groupBy { it.day } }
                 val othersByDay = remember(otherWeek) { otherWeek.groupBy { it.day } }
-                val dates = remember(schedule.termStartMonday, week) { weekDates(schedule.termStartMonday, week) }
+                val dates = remember(schedule.termStartMonday, week, startSunday) {
+                    weekDates(schedule.termStartMonday, week, startSunday)
+                }
                 Column(Modifier.fillMaxSize().verticalScroll(vs)) {
                     // 用 Column（不是 Box）纵向排列：11 节网格在上，"安排"行紧跟其下。
                     // 曾经用 Box 是为了把"整周实习"大卡片盖在网格上，那个叠加已移除；
@@ -975,7 +944,7 @@ fun TimetableView(
                                     Modifier
                                         .weight(1f)
                                         .height(slotH * 11)
-                                        .background(if (dates.getOrNull(dateIdx(i)) == today) th.todayTint else Color.Transparent)
+                                        .background(if (dates.getOrNull(i) == today) th.todayTint else Color.Transparent)
                                 ) {
                                     for (seg in remember(week, inWeek, otherWeek) {
                                         daySegments(byDay[d] ?: emptyList(), othersByDay[d] ?: emptyList())
@@ -1468,22 +1437,17 @@ fun EditCourseDialog(
     }
 }
 
-/**
- * 日期条"天序号"(可含小数) → 课表 pager 的 (page, pageOffsetFraction)。
- * page 夹在 0..maxPage、frac 夹在 ±0.5 内，保证 PagerState.scrollToPage 不会因越界/非法偏移而抛异常。
- */
-fun pagerPosFromDay(d: Float, dayIndexBase: Int, maxPage: Int): Pair<Int, Float> {
-    val p = ((d - dayIndexBase) / 7f).coerceIn(0f, maxPage.toFloat())
-    val page = Math.round(p).coerceIn(0, maxPage)
-    val frac = (p - page).coerceIn(-0.49f, 0.49f)
-    return page to frac
-}
-
-/** 某教学周 7 天的日期（周一~周日），解析失败返回 null 列表 */
-fun weekDates(startMonday: String, week: Int): List<LocalDate?> = try {
+/** 某教学周 7 天的日期，按【显示顺序】返回（与课表列顺序一致）：
+ *  周一起点 = 周一..周日；周日起点 = 周日..周六（该周周日即本周第一天，不是下个周日）。
+ *  解析失败返回 null 列表。
+ *
+ *  修复：旧实现恒返回「周一..周日」，切周日起点时靠旋转数组（把结尾的周日挪到第一列）——
+ *  结果周日列显示的是【本周之后的那个周日】，与日期条高亮的【本周之前的周日】差了整整一周 → 错位。 */
+fun weekDates(startMonday: String, week: Int, startSunday: Boolean = false): List<LocalDate?> = try {
     val s = LocalDate.parse(startMonday, DATE_FMT)
     val monday = s.plusDays(((week - 1) * 7).toLong())
-    (0..6).map { monday.plusDays(it.toLong()) }
+    val first = if (startSunday) monday.minusDays(1) else monday
+    (0..6).map { first.plusDays(it.toLong()) }
 } catch (e: Exception) {
     List(7) { null }
 }

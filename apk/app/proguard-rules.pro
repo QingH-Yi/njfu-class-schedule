@@ -14,3 +14,7 @@
 # Jsoup
 -dontwarn org.jsoup.**
 -keep class org.jsoup.** { *; }
+
+# 广播接收器：系统通过 AndroidManifest 反射实例化，混淆类名后会失效
+-keep class * extends android.content.BroadcastReceiver { <init>(); }
+

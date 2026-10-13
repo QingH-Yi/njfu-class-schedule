@@ -12,8 +12,10 @@ android {
         applicationId "com.njfu.schedule"
         minSdk 26
         targetSdk 35
-        versionCode 29
-        versionName "2.3.1"
+        versionCode 34
+        versionName "2.3.6"
+        // 只保留中英文资源，去掉 AndroidX 自带的其他语言，减小体积
+        resConfigs "zh", "en"
     }
 
     // 签名密钥信息放在【不入库】的 keystore.properties（含密码）。缺失时 release 不签名。
@@ -82,8 +84,6 @@ dependencies {
     implementation 'androidx.compose.material:material-icons-extended'
     implementation 'androidx.compose.material3:material3'
     implementation 'androidx.webkit:webkit:1.11.0'
-    // 桌面小组件（基于 Compose 运行时）。1.2.0 是当前稳定版；不要与主界面的 Compose UI 混用。
-    implementation 'androidx.glance:glance-appwidget:1.2.0'
     // 解析教务系统 HTML 课表
     implementation 'org.jsoup:jsoup:1.18.1'
     // 存 JSON（课表/设置）

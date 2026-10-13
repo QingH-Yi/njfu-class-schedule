@@ -26,6 +26,32 @@
             android:name=".ImportActivity"
             android:exported="false"
             android:label="导入课表" />
+
+        <!-- 桌面小组件：小卡片（下一节课） -->
+        <receiver
+            android:name=".NextClassWidgetReceiver"
+            android:exported="false"
+            android:label="@string/widget_next_desc">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_next_info" />
+        </receiver>
+
+        <!-- 桌面小组件：大卡片（本周课表） -->
+        <receiver
+            android:name=".WeekWidgetReceiver"
+            android:exported="false"
+            android:label="@string/widget_week_desc">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_week_info" />
+        </receiver>
     </application>
 
 </manifest>

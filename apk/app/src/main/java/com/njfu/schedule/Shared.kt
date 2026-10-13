@@ -1,9 +1,14 @@
 package com.njfu.schedule
 
+import java.time.format.DateTimeFormatter
+
 /**
- * 各 Activity 共用的纯工具：JS 转义、课表签名、星期名、周次格式化。
+ * 各 Activity / 小组件共用的纯工具：JS 转义、课表签名、星期名、周次格式化。
  * 原先这些在两个 Activity 里各写了一份，容易改一处漏一处，统一到这里。
  */
+
+/** 学期起始日等日期统一用这个格式（顶层常量，避免每次解析都重新编译 formatter） */
+val DATE_FMT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 
 /** 把字符串安全地嵌入页面 JS 的单引号字面量（登录脚本、抓取脚本共用） */
 fun jsStr(s: String): String = s

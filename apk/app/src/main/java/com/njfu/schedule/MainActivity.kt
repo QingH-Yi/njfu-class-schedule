@@ -189,6 +189,12 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    /** 打开/回到 App 时刷新桌面小组件（覆盖"导入课表返回""改设置"等场景） */
+    override fun onStart() {
+        super.onStart()
+        WidgetUpdater.refreshAllAsync(this)
+    }
+
     inner class BgGrab {
         private val tableRounds = ArrayList<String>()
         private val tableResults = ArrayList<ParseResult>()
@@ -217,6 +223,7 @@ class MainActivity : ComponentActivity() {
             Repository.replaceCourses(r.courses, r.term, keepEdited = Repository.editedCourses().isNotEmpty())
             runOnUiThread {
                 refreshSignal.value++
+                WidgetUpdater.refreshAllAsync(this@MainActivity)
                 startCreditRounds(r.term.ifEmpty { Repository.loadSchedule().term })
             }
         }
@@ -1337,9 +1344,6 @@ fun pagerPosFromDay(d: Float, dayIndexBase: Int, maxPage: Int): Pair<Int, Float>
     val frac = (p - page).coerceIn(-0.49f, 0.49f)
     return page to frac
 }
-
-/** 学期起始日等日期统一用这个格式（顶层常量，避免每次解析都重新编译 formatter） */
-private val DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 
 /** 某教学周 7 天的日期（周一~周日），解析失败返回 null 列表 */
 fun weekDates(startMonday: String, week: Int): List<LocalDate?> = try {

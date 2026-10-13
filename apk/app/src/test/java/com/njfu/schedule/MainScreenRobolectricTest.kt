@@ -255,4 +255,45 @@ class MainScreenRobolectricTest {
         assertTrue("双击空白格应弹出添加框",
             rule.onAllNodesWithText("课程名（必填）").fetchSemanticsNodes().isNotEmpty())
     }
+
+    /** 打开设置：点顶栏设置按钮，断言新设置界面渲染出来（分组标题 + 关键控件） */
+    private fun openSettings() {
+        seed()
+        rule.setContent { ScheduleApp(mutableStateOf(0)) }
+        rule.waitForIdle()
+        rule.onNodeWithTag("settingsButton").performClick()
+        rule.waitForIdle()
+    }
+
+    @Test
+    @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
+    fun settingsDialogShowsAllSections() {
+        // 设置界面美化后仍要能看到全部分组（回归：重构行式卡片别把某组漏掉）。
+        openSettings()
+        assertTrue("应有'设置'标题", hasText("设置"))
+        assertTrue("应有账号分组", hasText("账号与导入"))
+        assertTrue("应有一周起点分组", hasText("一周起点"))
+        assertTrue("应有色系分组", hasText("色系"))
+        assertTrue("应有外观分组", hasText("外观"))
+        assertTrue("应有背景分组", hasText("背景图片"))
+        assertTrue("应有更新分组", hasText("更新"))
+        assertTrue("应有学期分组", hasText("学期"))
+        assertTrue("应有关于分组", hasText("关于"))
+    }
+
+    @Test
+    @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
+    fun settingsShowsKeyControlsAndPalettes() {
+        // 关键控件与 4 个色系名都要在（色系改成色板后名字仍需可见）。
+        openSettings()
+        assertTrue("应有学号输入", hasText("学号 / 账号"))
+        assertTrue("应有自动更新开关", hasText("打开时自动更新"))
+        assertTrue("应有一周起点分段", hasText("每周从哪天开始"))
+        assertTrue("应列出马卡龙色系", hasText("马卡龙"))
+        assertTrue("应列出海盐色系", hasText("海盐"))
+        assertTrue("应列出樱花色系", hasText("樱花"))
+        assertTrue("应列出抹茶色系", hasText("抹茶"))
+        assertTrue("应有主题模式分段", hasText("主题模式"))
+        assertTrue("应有第一周周一", hasText("第一周周一"))
+    }
 }

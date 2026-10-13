@@ -445,7 +445,7 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                     IconButton(onClick = {
                         launcher.launch(Intent(context, ImportActivity::class.java))
                     }) { Icon(Icons.Default.Refresh, "更新课表") }
-                    IconButton(onClick = { showSettings = true }) {
+                    IconButton(onClick = { showSettings = true }, modifier = Modifier.testTag("settingsButton")) {
                         Icon(Icons.Default.Settings, "设置")
                     }
                 },
@@ -1204,34 +1204,28 @@ fun AddCourseDialog(
 
     MacDialog(color = th.surface, onDismissRequest = onDismiss) { close ->
         Column(Modifier.verticalScroll(rememberScrollState())) {
-            Text("添加课程", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = th.textPrimary)
+            DialogHeader(th, "添加课程", "➕")
             Spacer(Modifier.height(10.dp))
-            OutlinedTextField(name, { name = it },
-                label = { Text("课程名（必填）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            SettingField(th, "📚", name, { name = it }, "课程名（必填）", padded = false)
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedTextField(teacher, { teacher = it },
-                    label = { Text("老师") }, singleLine = true, modifier = Modifier.weight(1f))
-                OutlinedTextField(loc, { loc = it },
-                    label = { Text("教室") }, singleLine = true, modifier = Modifier.weight(1f))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SettingField(th, "👨🏫", teacher, { teacher = it }, "老师", padded = false, modifier = Modifier.weight(1f))
+                SettingField(th, "📍", loc, { loc = it }, "教室", padded = false, modifier = Modifier.weight(1f))
             }
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
             Text("上课时间（点选 / 拖拽，可多选组合）", fontSize = 12.sp, color = th.textSecondary)
             Spacer(Modifier.height(4.dp))
             PeriodPicker(slots, th) { slots = it }
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                val chipLabel = @Composable { t: String -> Text(t, fontSize = 12.sp, maxLines = 1) }
-                FilterChip(selected = mode == 0, onClick = { mode = 0 }, label = { chipLabel("每周") })
-                FilterChip(selected = mode == 1, onClick = { mode = 1 }, label = { chipLabel("单周") })
-                FilterChip(selected = mode == 2, onClick = { mode = 2 }, label = { chipLabel("双周") })
-                FilterChip(selected = mode == 3, onClick = { mode = 3 }, label = { chipLabel("仅本周") })
-            }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
+            SegmentedControl(
+                th, listOf("每周", "单周", "双周", "仅本周"), mode, { mode = it },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(16.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = close) { Text("取消", color = th.textSecondary) }
-                Spacer(Modifier.width(4.dp))
-                Button(enabled = valid, onClick = {
+                Spacer(Modifier.width(6.dp))
+                Button(shape = RoundedCornerShape(12.dp), enabled = valid, onClick = {
                     val weeks = when (mode) {
                         0 -> (1..20).toList()
                         1 -> (1..20).filter { it % 2 == 1 }
@@ -1441,18 +1435,15 @@ fun EditCourseDialog(
 
     MacDialog(color = th.surface, onDismissRequest = onDismiss) { close ->
         Column(Modifier.verticalScroll(rememberScrollState())) {
-            Text("编辑课程", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = th.textPrimary)
+            DialogHeader(th, "编辑课程", "✏️")
             Spacer(Modifier.height(10.dp))
-            OutlinedTextField(name, { name = it },
-                label = { Text("课程名") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            SettingField(th, "📚", name, { name = it }, "课程名", padded = false)
             Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                OutlinedTextField(teacher, { teacher = it },
-                    label = { Text("老师") }, singleLine = true, modifier = Modifier.weight(1f))
-                OutlinedTextField(location, { location = it },
-                    label = { Text("教室") }, singleLine = true, modifier = Modifier.weight(1f))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SettingField(th, "👨🏫", teacher, { teacher = it }, "老师", padded = false, modifier = Modifier.weight(1f))
+                SettingField(th, "📍", location, { location = it }, "教室", padded = false, modifier = Modifier.weight(1f))
             }
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(12.dp))
             // 整周安排（实习/实验/课程设计）也能设具体时间：留空=保持整周（第 12 行横跨周一~周五）；
             // 选了具体时段就变成普通课、移到上面的网格里（Repository.editCourse 已按此处理）
             Text(
@@ -1467,20 +1458,27 @@ fun EditCourseDialog(
                 Text("当前：整周安排（不占具体时段）", fontSize = 11.sp, color = th.textSecondary)
             }
             Spacer(Modifier.height(10.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { wholeTerm = !wholeTerm }) {
-                Checkbox(checked = wholeTerm, onCheckedChange = { wholeTerm = it })
-                Text("整个学期", fontSize = 13.sp, color = th.textPrimary)
-                Spacer(Modifier.width(14.dp))
-                Checkbox(checked = thisWeekOnly, onCheckedChange = { thisWeekOnly = it })
-                Text("仅第 $currentWeek 周", fontSize = 13.sp, color = th.textPrimary)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { wholeTerm = !wholeTerm }
+                        .padding(end = 6.dp)
+                ) {
+                    Checkbox(checked = wholeTerm, onCheckedChange = { wholeTerm = it })
+                    Text("整个学期", fontSize = 13.sp, color = th.textPrimary)
+                }
+                Spacer(Modifier.width(6.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { thisWeekOnly = !thisWeekOnly }
+                ) {
+                    Checkbox(checked = thisWeekOnly, onCheckedChange = { thisWeekOnly = it })
+                    Text("仅第 $currentWeek 周", fontSize = 13.sp, color = th.textPrimary)
+                }
             }
             Spacer(Modifier.height(8.dp))
             if (!thisWeekOnly) {
-                OutlinedTextField(
-                    weeksText, { weeksText = it },
-                    label = { Text("周次（如 1-16,18）") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                SettingField(th, "🗓️", weeksText, { weeksText = it }, "周次（如 1-16,18）", padded = false)
             } else {
                 Text("只改第 $currentWeek 周，其余周次不变。", fontSize = 11.sp, color = th.textSecondary)
             }
@@ -1488,7 +1486,10 @@ fun EditCourseDialog(
                 Spacer(Modifier.height(10.dp))
                 // 同名课程同步修改：默认勾选。勾上后，改名称/老师/教室/时段会同步到本周所有同名课；
                 // 时段选择器预填"整门课"的时段（所有同名课的并集），方便一起调整。
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { syncSameName = !syncSameName }) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { syncSameName = !syncSameName }
+                ) {
                     Checkbox(checked = syncSameName, onCheckedChange = { syncSameName = it })
                     Text("同步修改本周所有「${course.name}」课（共 $sameNameCount 节）", fontSize = 13.sp, color = th.textPrimary)
                 }
@@ -1506,11 +1507,11 @@ fun EditCourseDialog(
                     if (u.isNotEmpty()) slots = u
                 }
             }
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(16.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = close) { Text("取消", color = th.textSecondary) }
-                Spacer(Modifier.width(4.dp))
-                Button(enabled = valid, onClick = {
+                Spacer(Modifier.width(6.dp))
+                Button(shape = RoundedCornerShape(12.dp), enabled = valid, onClick = {
                     onConfirm(
                         name, teacher, location, slotsToRuns(slots),
                         if (thisWeekOnly) listOf(currentWeek) else parseWeeksText(weeksText),
@@ -1606,222 +1607,223 @@ fun SettingsDialog(
                     .heightIn(max = 560.dp)
                     .verticalScroll(rememberScrollState())
             ) {
-                Text("设置", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = th.textPrimary)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("设置", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = th.textPrimary)
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "v${MainActivity.currentVersionName(context)}",
+                        fontSize = 11.sp, color = th.textSecondary
+                    )
+                }
 
                 SectionTitle("账号与导入", th.accent, "👤")
-                SettingsCard(th.bg.copy(alpha = 0.6f), th.divider) {
-                    OutlinedTextField(user, { user = it },
-                        label = { Text("学号 / 账号") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(pass, { pass = it },
-                        label = { Text(if (savePass) "密码（已保存，留空不改）" else "密码") },
-                        singleLine = true, modifier = Modifier.fillMaxWidth())
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(url, { url = it },
-                        label = { Text("教务网址（默认课表页，可改）") },
-                        singleLine = true, modifier = Modifier.fillMaxWidth())
-                    Spacer(Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(savePass, { savePass = it })
-                        Text("保存密码", fontSize = 13.sp, color = th.textPrimary)
-                        Spacer(Modifier.width(10.dp))
-                        Checkbox(auto, { auto = it })
-                        Text("打开时自动更新", fontSize = 13.sp, color = th.textPrimary)
-                    }
+                SettingsCard(th) {
+                    SettingField(th, "🆔", user, { user = it }, "学号 / 账号")
+                    SettingsDivider(th)
+                    SettingField(th, "🔑", pass, { pass = it },
+                        if (savePass) "密码（已保存，留空不改）" else "密码")
+                    SettingsDivider(th)
+                    SettingField(th, "🔗", url, { url = it }, "教务网址（默认课表页，可改）")
+                    SettingsDivider(th)
+                    SettingsSwitchRow(th, "💾", SETTING_TINTS[0], "保存密码", savePass, { savePass = it },
+                        subtitle = "仅存本机，不上传")
+                    SettingsDivider(th)
+                    SettingsSwitchRow(th, "🔄", SETTING_TINTS[2], "打开时自动更新", auto, { auto = it },
+                        subtitle = "每次启动同步教务最新课表")
                 }
 
                 SectionTitle("一周起点", th.accent, "📅")
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FilterChip(selected = !startSunday, onClick = { startSunday = false },
-                        label = { Text("周一", fontSize = 12.sp) })
-                    FilterChip(selected = startSunday, onClick = { startSunday = true },
-                        label = { Text("周日", fontSize = 12.sp) })
-                }
-
-                SectionTitle("色系", th.accent, "🎨")
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    PALETTE_NAMES.forEachIndexed { i, n ->
-                        FilterChip(
-                            selected = customHue < 0 && paletteId == i,
-                            onClick = { paletteId = i; customHue = -1 },
-                            label = { Text(n, fontSize = 12.sp, maxLines = 1) }
+                SettingsCard(th) {
+                    SettingsRow(th, "📅", SETTING_TINTS[3], "每周从哪天开始") {
+                        SegmentedControl(
+                            th, listOf("周一", "周日"),
+                            if (startSunday) 1 else 0,
+                            { startSunday = it == 1 },
+                            modifier = Modifier.width(140.dp)
                         )
                     }
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    FilterChip(
-                        selected = customHue in 0..359,
-                        onClick = { if (customHue < 0) customHue = 210 },
-                        label = { Text("自定义", fontSize = 12.sp, maxLines = 1) }
+
+                SectionTitle("色系", th.accent, "🎨")
+                SettingsCard(th) {
+                    PaletteSwatchRow(
+                        th, PALETTES, PALETTE_NAMES,
+                        selectedIndex = if (customHue in 0..359) -1 else paletteId,
+                        onSelect = { paletteId = it; customHue = -1 },
+                        onCustom = { if (customHue < 0) customHue = 210 }
                     )
-                    Spacer(Modifier.width(6.dp))
-                    Slider(
-                        value = (if (customHue in 0..359) customHue else 210).toFloat(),
-                        onValueChange = { customHue = it.toInt() },
-                        valueRange = 0f..359f,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Box(
-                        Modifier
-                            .size(22.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(
-                                if (customHue in 0..359) Color.hsl(customHue.toFloat(), 0.55f, 0.5f)
-                                else th.accent
+                    if (customHue in 0..359) {
+                        SettingsDivider(th)
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("色相", fontSize = 12.sp, color = th.textSecondary)
+                            Spacer(Modifier.width(8.dp))
+                            Slider(
+                                value = customHue.toFloat(),
+                                onValueChange = { customHue = it.toInt() },
+                                valueRange = 0f..359f,
+                                modifier = Modifier.weight(1f)
                             )
-                    )
+                            Spacer(Modifier.width(10.dp))
+                            Box(
+                                Modifier
+                                    .size(24.dp)
+                                    .clip(RoundedCornerShape(7.dp))
+                                    .background(Color.hsl(customHue.toFloat(), 0.55f, 0.5f))
+                            )
+                        }
+                    }
                 }
 
                 SectionTitle("外观", th.accent, "🌗")
-                SettingsCard(th.bg.copy(alpha = 0.6f), th.divider) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        FilterChip(selected = mode == "auto", onClick = { mode = "auto" },
-                            label = { Text("跟随系统", fontSize = 12.sp) })
-                        FilterChip(selected = mode == "light", onClick = { mode = "light" },
-                            label = { Text("浅色", fontSize = 12.sp) })
-                        FilterChip(selected = mode == "dark", onClick = { mode = "dark" },
-                            label = { Text("深色", fontSize = 12.sp) })
+                SettingsCard(th) {
+                    SettingsRow(th, "🌗", SETTING_TINTS[4], "主题模式") {
+                        SegmentedControl(
+                            th, listOf("系统", "浅色", "深色"),
+                            when (mode) { "light" -> 1; "dark" -> 2; else -> 0 },
+                            { mode = listOf("auto", "light", "dark")[it] },
+                            modifier = Modifier.width(168.dp)
+                        )
                     }
-                    Spacer(Modifier.height(6.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Switch(checked = invert, onCheckedChange = { invert = it })
-                        Spacer(Modifier.width(8.dp))
-                        Text("反色（在当前模式上翻转明暗）", fontSize = 13.sp, color = th.textPrimary)
-                    }
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(showOther, { showOther = it })
-                        Text("显示非本周课程（半透明）", fontSize = 13.sp, color = th.textPrimary)
-                    }
+                    SettingsDivider(th)
+                    SettingsSwitchRow(th, "🌓", SETTING_TINTS[4], "反色", invert, { invert = it },
+                        subtitle = "在当前模式上翻转明暗")
+                    SettingsDivider(th)
+                    SettingsSwitchRow(th, "👀", SETTING_TINTS[1], "显示非本周课程", showOther, { showOther = it },
+                        subtitle = "其他周的课半透明显示")
                 }
 
                 SectionTitle("背景图片", th.accent, "🖼️")
-                SettingsCard(th.bg.copy(alpha = 0.6f), th.divider) {
-                    Text("上传一张自己的图片做课表背景（仅存本机，不上传）。", fontSize = 12.sp, color = th.textSecondary)
-                    Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedButton(onClick = {
-                            bgPicker.launch(
-                                androidx.activity.result.PickVisualMediaRequest(
-                                    ActivityResultContracts.PickVisualMedia.ImageOnly
-                                )
-                            )
-                        }) { Text(if (bgUri.isEmpty()) "上传图片" else "更换图片", fontSize = 13.sp) }
-                        if (bgUri.isNotEmpty()) {
-                            TextButton(onClick = { bgUri = "" }) {
-                                Text("清除", fontSize = 13.sp, color = th.textSecondary)
+                SettingsCard(th) {
+                    SettingsRow(
+                        th, "🖼️", SETTING_TINTS[5], "自定义背景",
+                        subtitle = "上传一张自己的图片做课表背景（仅存本机，不上传）"
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedButton(
+                                onClick = {
+                                    bgPicker.launch(
+                                        androidx.activity.result.PickVisualMediaRequest(
+                                            ActivityResultContracts.PickVisualMedia.ImageOnly
+                                        )
+                                    )
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                            ) { Text(if (bgUri.isEmpty()) "上传" else "更换", fontSize = 12.sp) }
+                            if (bgUri.isNotEmpty()) {
+                                Spacer(Modifier.width(6.dp))
+                                TextButton(
+                                    onClick = { bgUri = "" },
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                ) { Text("清除", fontSize = 12.sp, color = th.textSecondary) }
                             }
                         }
                     }
                     if (bgUri.isNotEmpty()) {
-                        Spacer(Modifier.height(6.dp))
-                        Text("背景清晰度（往右越淡、文字越清楚）", fontSize = 12.sp, color = th.textSecondary)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        SettingsDivider(th)
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("清晰度", fontSize = 12.sp, color = th.textSecondary)
+                            Spacer(Modifier.width(8.dp))
                             Slider(
                                 value = bgDim.toFloat(),
                                 onValueChange = { bgDim = it.toInt() },
                                 valueRange = 0f..100f,
                                 modifier = Modifier.weight(1f)
                             )
-                            Spacer(Modifier.width(8.dp))
+                            Spacer(Modifier.width(10.dp))
                             Text("$bgDim%", fontSize = 12.sp, color = th.textSecondary)
                         }
                     }
                 }
 
                 SectionTitle("更新", th.accent, "🔄")
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checkUp, { checkUp = it })
-                    Text("打开时后台检查新版本（GitHub）", fontSize = 13.sp, color = th.textPrimary)
-                }
-                Spacer(Modifier.height(6.dp))
-                // 手动检查：到 GitHub 搜索最新 Release，有新版直接给下载入口
-                var checking by remember { mutableStateOf(false) }
-                var checkResult by remember { mutableStateOf<List<String>?>(null) } // [版本, 链接] 或 ["LATEST"] 或 ["FAIL"]
-                val scope = rememberCoroutineScope()
-                OutlinedButton(
-                    enabled = !checking,
-                    onClick = {
-                        checking = true
-                        checkResult = null
-                        scope.launch {
-                            val remote = withContext(Dispatchers.IO) { MainActivity.fetchLatestRelease() }
-                            checking = false
-                            checkResult = when {
-                                remote == null -> listOf("FAIL")
-                                MainActivity.isNewerVersion(
-                                    remote.first, MainActivity.currentVersionName(context)
-                                ) -> listOf(remote.first, remote.second)
-                                else -> listOf("LATEST")
+                SettingsCard(th) {
+                    SettingsSwitchRow(th, "🔔", SETTING_TINTS[2], "自动检查新版本", checkUp, { checkUp = it },
+                        subtitle = "打开时后台访问 GitHub")
+                    SettingsDivider(th)
+                    // 手动检查：到 GitHub 搜索最新 Release，有新版直接给下载入口
+                    var checking by remember { mutableStateOf(false) }
+                    var checkResult by remember { mutableStateOf<List<String>?>(null) } // [版本, 链接] 或 ["LATEST"] 或 ["FAIL"]
+                    val scope = rememberCoroutineScope()
+                    SettingsRow(
+                        th, "⬇️", SETTING_TINTS[0], "立即检查更新",
+                        subtitle = when (checkResult?.firstOrNull()) {
+                            "LATEST" -> "✓ 已是最新版本 v${MainActivity.currentVersionName(context)}"
+                            "FAIL" -> "检查失败（连不上 GitHub，稍后再试）"
+                            null -> null
+                            else -> "⬇️ 发现新版本 v${checkResult!![0]}，点此下载"
+                        },
+                        onClick = {
+                            if (checking) return@SettingsRow
+                            checking = true
+                            checkResult = null
+                            scope.launch {
+                                val remote = withContext(Dispatchers.IO) { MainActivity.fetchLatestRelease() }
+                                checking = false
+                                checkResult = when {
+                                    remote == null -> listOf("FAIL")
+                                    MainActivity.isNewerVersion(
+                                        remote.first, MainActivity.currentVersionName(context)
+                                    ) -> listOf(remote.first, remote.second)
+                                    else -> listOf("LATEST")
+                                }
+                                // 发现新版：直接跳到下载
+                                if (checkResult?.size == 2) openUrl(context, checkResult!![1])
                             }
                         }
-                    }
-                ) { Text(if (checking) "正在检查…" else "立即检查更新", fontSize = 13.sp) }
-                checkResult?.let { r ->
-                    Spacer(Modifier.height(4.dp))
-                    when (r[0]) {
-                        "LATEST" -> Text(
-                            "✓ 已是最新版本 v${MainActivity.currentVersionName(context)}",
-                            fontSize = 12.sp, color = th.textSecondary
-                        )
-                        "FAIL" -> Text(
-                            "检查失败（网络连不上 GitHub，稍后再试）",
-                            fontSize = 12.sp, color = th.textSecondary
-                        )
-                        else -> Text(
-                            "⬇️ 发现新版本 v${r[0]}，点击下载安装包",
-                            fontSize = 13.sp, fontWeight = FontWeight.Medium, color = th.accent,
-                            modifier = Modifier
-                                .clickable { openUrl(context, r[1]) }
-                                .padding(vertical = 2.dp)
-                        )
+                    ) {
+                        if (checking) {
+                            Text("检查中…", fontSize = 12.sp, color = th.textSecondary)
+                        } else {
+                            SettingsChevron(th)
+                        }
                     }
                 }
 
                 SectionTitle("学期", th.accent, "🗓️")
-                OutlinedButton(onClick = {
-                    val cal = Calendar.getInstance()
-                    DatePickerDialog(context, { _, y, m, d ->
-                        start = "%04d-%02d-%02d".format(y, m + 1, d)
-                    }, cal.get(Calendar.YEAR), cal.get(Calendar.MONTH),
-                        cal.get(Calendar.DAY_OF_MONTH)).show()
-                }) { Text("第一周周一：$start", fontSize = 13.sp) }
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(weekOverride, {
-                    weekOverride = it.filter { ch -> ch.isDigit() }.take(2)
-                }, label = { Text("手动指定当前周（可空=自动）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                SettingsCard(th) {
+                    SettingsRow(
+                        th, "📆", SETTING_TINTS[3], "第一周周一", subtitle = start,
+                        onClick = {
+                            val cal = Calendar.getInstance()
+                            DatePickerDialog(context, { _, y, m, d ->
+                                start = "%04d-%02d-%02d".format(y, m + 1, d)
+                            }, cal.get(Calendar.YEAR), cal.get(Calendar.MONTH),
+                                cal.get(Calendar.DAY_OF_MONTH)).show()
+                        }
+                    ) { SettingsChevron(th) }
+                    SettingsDivider(th)
+                    SettingField(
+                        th, "🔢", weekOverride,
+                        { weekOverride = it.filter { ch -> ch.isDigit() }.take(2) },
+                        "手动指定当前周（留空 = 自动）",
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                    )
+                }
 
-                Spacer(Modifier.height(16.dp))
-                HorizontalDivider(color = th.divider, thickness = 1.dp)
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "📖 使用教程",
-                    fontSize = 13.sp, fontWeight = FontWeight.Medium, color = th.accent,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onShowTutorial() }
-                        .padding(vertical = 4.dp)
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "GitHub：github.com/${MainActivity.GITHUB_USER}（作者）",
-                    fontSize = 12.sp, color = th.textSecondary,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { openUrl(context, MainActivity.GITHUB_URL) }
-                        .padding(vertical = 4.dp)
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    "南林课程表 v${MainActivity.currentVersionName(context)} · 作者 ID：${MainActivity.GITHUB_USER}",
-                    fontSize = 11.sp, color = th.textSecondary.copy(alpha = 0.8f),
-                    modifier = Modifier.padding(vertical = 4.dp)
-                )
+                SectionTitle("关于", th.accent, "ℹ️")
+                SettingsCard(th) {
+                    SettingsRow(th, "📖", SETTING_TINTS[4], "使用教程",
+                        subtitle = "看看怎么用、怎么自动更新",
+                        onClick = { onShowTutorial() }) { SettingsChevron(th) }
+                    SettingsDivider(th)
+                    SettingsRow(th, "🐙", SETTING_TINTS[0], "GitHub",
+                        subtitle = "github.com/${MainActivity.GITHUB_USER}",
+                        onClick = { openUrl(context, MainActivity.GITHUB_URL) }) { SettingsChevron(th) }
+                    SettingsDivider(th)
+                    SettingsRow(th, "📦", SETTING_TINTS[5], "版本",
+                        subtitle = "南林课程表 v${MainActivity.currentVersionName(context)}")
+                }
 
             }
 
-            HorizontalDivider(color = th.divider, thickness = 1.dp)
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = close) { Text("取消", color = th.textSecondary) }
                 Spacer(Modifier.width(4.dp))
@@ -1930,7 +1932,7 @@ fun TutorialDialog(th: AppColors, onDone: () -> Unit) {
         onDone()
     }) { close ->
         Column(Modifier.fillMaxWidth()) {
-            Text("使用教程", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = th.textPrimary)
+            DialogHeader(th, "使用教程", "📖")
             Spacer(Modifier.height(2.dp))
             Text(
                 "GitHub：github.com/${MainActivity.GITHUB_USER}",

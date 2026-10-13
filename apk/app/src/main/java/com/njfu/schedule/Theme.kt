@@ -6,6 +6,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -14,10 +16,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -109,7 +117,7 @@ private val MATCHA = listOf(
 )
 
 val PALETTE_NAMES = listOf("马卡龙", "海盐", "樱花", "抹茶")
-private val PALETTES = listOf(MACARON, SEA, SAKURA, MATCHA)
+val PALETTES = listOf(MACARON, SEA, SAKURA, MATCHA)
 private val PALETTE_ACCENTS = listOf(
     Color(0xFFE8919E), Color(0xFF2E8FA8), Color(0xFFB4548A), Color(0xFF5E8A3A)
 )
@@ -215,39 +223,299 @@ fun MacDialog(
     }
 }
 
-/** 设置页的分类小标题：左侧一根圆角强调色小竖条 + 文字，比纯文字更有设计感 */
+/* ───────────────────────── 设置界面统一组件 ─────────────────────────
+ * 目标：整齐、规律、精致——所有设置项都用同一套「图标 + 标题(+副标题) + 右侧控件」
+ * 的行式排版，行高/间距/圆角/分隔线全部一致；分组用圆角卡片归拢。
+ */
+
+/** 设置图标的柔和配色（与马卡龙主题协调），按分组取用，让界面更有层次 */
+val SETTING_TINTS = listOf(
+    Color(0xFF7C9BE8), // 蓝
+    Color(0xFFE88AA5), // 粉
+    Color(0xFF6FBF9B), // 绿
+    Color(0xFFE0A55C), // 橙
+    Color(0xFF9B86D9), // 紫
+    Color(0xFF57B6C4)  // 青
+)
+
+/** 设置分组标题：强调色小竖条 + 图标 + 标题，统一节奏（比纯文字更有层次） */
 @Composable
 fun SectionTitle(text: String, color: Color, icon: String = "") {
     Row(
-        modifier = Modifier.padding(top = 18.dp, bottom = 8.dp),
+        modifier = Modifier.padding(top = 18.dp, bottom = 8.dp).padding(start = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             Modifier
-                .width(4.dp)
-                .height(15.dp)
+                .width(3.dp)
+                .height(14.dp)
                 .clip(RoundedCornerShape(2.dp))
                 .background(color)
         )
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(7.dp))
         if (icon.isNotEmpty()) {
-            Text(icon, fontSize = 14.sp)
+            Text(icon, fontSize = 13.sp)
             Spacer(Modifier.width(5.dp))
         }
-        Text(text, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = color)
+        Text(text, fontSize = 13.5.sp, fontWeight = FontWeight.Bold, color = color)
     }
 }
 
-/** 设置项分组卡片：把一组设置放进圆角浅底卡片，视觉上成块、不再平铺 */
+/** 设置分组卡片：圆角浅底 + 细边框，把一组行归拢成块（不再平铺） */
 @Composable
-fun SettingsCard(color: Color, border: Color, content: @Composable ColumnScope.() -> Unit) {
+fun SettingsCard(th: AppColors, content: @Composable ColumnScope.() -> Unit) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = color,
-        border = BorderStroke(1.dp, border),
+        shape = RoundedCornerShape(18.dp),
+        color = th.bg.copy(alpha = if (th.dark) 0.55f else 0.65f),
+        border = BorderStroke(1.dp, th.divider),
         modifier = Modifier.fillMaxWidth()
     ) {
-        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), content = content)
+        Column(content = content)
+    }
+}
+
+/** 设置行：左侧彩色圆角图标 + 标题(+副标题)，右侧放控件/箭头。整行可点（onClick 非空时）。 */
+@Composable
+fun SettingsRow(
+    th: AppColors,
+    icon: String,
+    iconColor: Color,
+    title: String,
+    subtitle: String? = null,
+    onClick: (() -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null
+) {
+    val base = Modifier.fillMaxWidth()
+    val row = if (onClick != null) base.clickable { onClick() } else base
+    Row(
+        modifier = row.padding(horizontal = 14.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(9.dp))
+                .background(iconColor.copy(alpha = if (th.dark) 0.26f else 0.18f)),
+            contentAlignment = Alignment.Center
+        ) { Text(icon, fontSize = 15.sp) }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = 14.sp, fontWeight = FontWeight.Medium, color = th.textPrimary)
+            if (!subtitle.isNullOrEmpty()) {
+                Spacer(Modifier.height(1.dp))
+                Text(subtitle, fontSize = 11.sp, lineHeight = 15.sp, color = th.textSecondary)
+            }
+        }
+        if (trailing != null) {
+            Spacer(Modifier.width(10.dp))
+            trailing()
+        }
+    }
+}
+
+/** 分组内的细分隔线：左侧让出图标位，视觉更整齐（最后一行后不画，由调用方控制） */
+@Composable
+fun SettingsDivider(th: AppColors) {
+    HorizontalDivider(
+        color = th.divider,
+        thickness = 1.dp,
+        modifier = Modifier.padding(start = 58.dp, end = 14.dp)
+    )
+}
+
+/** 开关行：图标 + 标题(+副标题) + 右侧 Switch（整行可点切换） */
+@Composable
+fun SettingsSwitchRow(
+    th: AppColors,
+    icon: String,
+    iconColor: Color,
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    subtitle: String? = null
+) {
+    SettingsRow(th, icon, iconColor, title, subtitle, onClick = { onCheckedChange(!checked) }) {
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(checkedTrackColor = iconColor)
+        )
+    }
+}
+
+/** 右侧值 + 箭头（表示"点进去还能改"） */
+@Composable
+fun SettingsChevron(th: AppColors) {
+    Text("›", fontSize = 18.sp, color = th.textSecondary.copy(alpha = 0.7f))
+}
+
+/** 设置里的输入框：左侧图标 + 统一圆角/边框，与设置行同宽同边距，整体更整齐 */
+@Composable
+fun SettingField(
+    th: AppColors,
+    icon: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    singleLine: Boolean = true,
+    padded: Boolean = true,
+    keyboardType: androidx.compose.ui.text.input.KeyboardType =
+        androidx.compose.ui.text.input.KeyboardType.Text
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label, fontSize = 12.sp) },
+        leadingIcon = { Text(icon, fontSize = 15.sp) },
+        singleLine = singleLine,
+        shape = RoundedCornerShape(12.dp),
+        textStyle = androidx.compose.material3.LocalTextStyle.current.copy(
+            fontSize = 14.sp, color = th.textPrimary
+        ),
+        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = keyboardType),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = th.accent,
+            unfocusedBorderColor = th.divider,
+            focusedLabelColor = th.accent,
+            unfocusedLabelColor = th.textSecondary,
+            cursorColor = th.accent
+        ),
+        modifier = modifier
+            .fillMaxWidth()
+            .then(if (padded) Modifier.padding(horizontal = 14.dp, vertical = 6.dp) else Modifier)
+    )
+}
+
+/** 弹窗标题：可选图标 + 标题，统一各弹窗的顶部排版 */
+@Composable
+fun DialogHeader(th: AppColors, title: String, icon: String = "") {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (icon.isNotEmpty()) {
+            Box(
+                Modifier
+                    .size(30.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(th.accent.copy(alpha = if (th.dark) 0.26f else 0.16f)),
+                contentAlignment = Alignment.Center
+            ) { Text(icon, fontSize = 15.sp) }
+            Spacer(Modifier.width(10.dp))
+        }
+        Text(title, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = th.textPrimary)
+    }
+}
+
+/**
+ * 分段选择器：一排等宽选项，选中项用强调色实底 + 白字。
+ * 比一排 FilterChip 更整齐、更像现代 App 的设置项（选项少、互斥时用）。
+ */
+@Composable
+fun SegmentedControl(
+    th: AppColors,
+    options: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(11.dp),
+        color = th.divider.copy(alpha = if (th.dark) 0.5f else 0.6f),
+        modifier = modifier
+    ) {
+        Row(Modifier.padding(3.dp)) {
+            options.forEachIndexed { i, label ->
+                val on = i == selectedIndex
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (on) th.accent else Color.Transparent)
+                        .clickable { onSelect(i) }
+                        .padding(vertical = 7.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        label,
+                        fontSize = 12.5.sp,
+                        fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (on) Color.White else th.textPrimary,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 色系选择行：每个色系画成一组小圆点（用该色系的卡片底色），选中的描一圈强调色。
+ * 比文字 chip 更直观，也更精致。
+ */@Composable
+fun PaletteSwatchRow(
+    th: AppColors,
+    palettes: List<List<Pair<Color, Color>>>,
+    names: List<String>,
+    selectedIndex: Int,       // -1 = 自定义
+    onSelect: (Int) -> Unit,
+    onCustom: () -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        palettes.forEachIndexed { i, pal ->
+            val on = selectedIndex == i
+            Column(
+                Modifier.weight(1f).clip(RoundedCornerShape(12.dp))
+                    .clickable { onSelect(i) }
+                    .padding(vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Row(Modifier.clip(RoundedCornerShape(20.dp)).padding(2.dp)) {
+                    listOf(0, 2, 4).forEach { k ->
+                        Box(
+                            Modifier
+                                .size(11.dp)
+                                .clip(RoundedCornerShape(20.dp))
+                                .background(pal[k % pal.size].first)
+                        )
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    names[i], fontSize = 10.5.sp, maxLines = 1,
+                    color = if (on) th.accent else th.textSecondary,
+                    fontWeight = if (on) FontWeight.Bold else FontWeight.Normal
+                )
+            }
+        }
+        // 自定义：一个彩虹渐变似的圆点
+        val on = selectedIndex == -1
+        Column(
+            Modifier.weight(1f).clip(RoundedCornerShape(12.dp))
+                .clickable { onCustom() }
+                .padding(vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                Modifier.size(35.dp).clip(RoundedCornerShape(20.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Row {
+                    listOf(0f, 60f, 120f, 180f, 240f, 300f).forEach { h ->
+                        Box(
+                            Modifier.size(6.dp).background(Color.hsl(h, 0.6f, 0.7f))
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "自定义", fontSize = 10.5.sp, maxLines = 1,
+                color = if (on) th.accent else th.textSecondary,
+                fontWeight = if (on) FontWeight.Bold else FontWeight.Normal
+            )
+        }
     }
 }
 

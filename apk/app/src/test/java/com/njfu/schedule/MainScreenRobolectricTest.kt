@@ -7,6 +7,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -303,7 +304,8 @@ class MainScreenRobolectricTest {
         rule.onAllNodesWithText(name).fetchSemanticsNodes()
             .count { it.boundsInRoot.width > 0f && it.boundsInRoot.height > 0f }
 
-    /** 打开一门课的详情弹窗：单击选中 + 再单击（网格手势是 pointerInput，注入真实触摸才触发） */
+    /** 打开一门课的详情弹窗：单击选中 + 再单击（网格手势是 pointerInput，注入真实触摸才触发）。
+     *  半透明的"非本周课"单击就直接开详情，所以单击后先看弹窗出没出现，没出再补一次双击。 */
     private fun openDetail(name: String) {
         val nodes = rule.onAllNodesWithText(name).fetchSemanticsNodes()
         val visible = nodes.withIndex().filter { it.value.boundsInRoot.width > 0f && it.value.boundsInRoot.height > 0f }
@@ -311,9 +313,11 @@ class MainScreenRobolectricTest {
         val i = visible.first().index
         rule.onAllNodesWithText(name)[i].performClick()
         rule.waitForIdle()
-        // 第二次用 doubleClick（与 blankCell 用例同款）：两次独立单击会被双击检测窗口吞掉
-        rule.onAllNodesWithText(name)[i].performTouchInput { doubleClick() }
-        rule.waitForIdle()
+        if (rule.onAllNodesWithText("备忘录", substring = true).fetchSemanticsNodes().isEmpty()) {
+            // 第二次用 doubleClick（与 blankCell 用例同款）：两次独立单击会被双击检测窗口吞掉
+            rule.onAllNodesWithText(name)[i].performTouchInput { doubleClick() }
+            rule.waitForIdle()
+        }
     }
 
     @Test
@@ -356,5 +360,81 @@ class MainScreenRobolectricTest {
         val c = Repository.loadSchedule().courses.first { it.id == "c2" }
         assertEquals("其余周次要保留", "1-6,8-16", formatWeeks(c.weeks))
         assertTrue("拆剩的课要标 edited（防重抓覆盖回完整周次）", c.edited)
+    }
+
+    /** 编辑弹窗取消"同步修改"后，时段必须还原成这一节自己的（带着并集保存会炸出重复课） */
+    @Test
+    @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
+    fun editDialogUncheckSyncDoesNotDuplicateCourses() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        Repository.init(ctx)
+        Repository.checkUpdate = false
+        Repository.showTutorial = false
+        Repository.weekOverride = 7
+        Repository.autoUpdate = false
+        Repository.saveSchedule(
+            Schedule(
+                "2026-2027-1", "2026-08-31", "xz",
+                listOf(
+                    Course("m1", "高等数学", "张三", "50320", 1, 1, 2, (1..16).toList()),
+                    Course("m2", "高等数学", "张三", "50320", 3, 3, 4, (1..16).toList())
+                )
+            )
+        )
+        rule.setContent { ScheduleApp(mutableStateOf(0)) }
+        rule.waitForIdle()
+        openDetail("高等数学")   // 打开的是周一那节
+        rule.onAllNodesWithText("编辑")[0].performClick()
+        rule.waitForIdle()
+        // 取消"同步修改本周所有同名课"
+        rule.onNodeWithTag("editSyncRow").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("editSaveButton").performClick()
+        rule.waitForIdle()
+        val courses = Repository.loadSchedule().courses
+        assertEquals("取消同步后保存不能炸出重复课", 2, courses.size)
+        assertEquals("周一那节保持原时段", 1, courses.first { it.day == 1 }.startPeriod)
+        assertEquals("周三那节不受影响", 1, courses.count { it.day == 3 })
+    }
+
+    /** 不在本周的课（半透明"非本周课程"）删除时：不提供无效的"仅本周"，只能整学期删 */
+    @Test
+    @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
+    fun deleteDialogHidesThisWeekOptionForCourseNotInCurrentWeek() {
+        seed()
+        Repository.showOtherWeekCourses = true
+        // 电气控制与PLC 是 3-8 周，第 7 周在课；改用"仅第 10-12 周"的课来当半透明课不好种，
+        // 直接把 weekOverride 设到 11（实习 7-9 周不在；信号 1-16 在）——用一个 10-12 周的课
+        Repository.saveSchedule(
+            Schedule(
+                "2026-2027-1", "2026-08-31", "xz",
+                listOf(
+                    Course("c2", "信号与系统分析", "焦万果", "50308", 3, 3, 4, (1..16).toList()),
+                    Course("c9", "生产实习", "赵六", "厂房", 2, 1, 2, listOf(10, 11, 12))
+                )
+            )
+        )
+        Repository.weekOverride = 7
+        rule.setContent { ScheduleApp(mutableStateOf(0)) }
+        rule.waitForIdle()
+        // 生产实习不在第 7 周 → 半透明显示，点开详情 → 删除
+        openDetail("生产实习")
+        rule.onNodeWithTag("detailDeleteButton").performClick()
+        rule.waitForIdle()
+        assertTrue(
+            "不在本周的课不该出现'仅第 7 周'选项",
+            rule.onAllNodesWithText("仅第 7 周").fetchSemanticsNodes().isEmpty()
+        )
+        assertTrue(
+            "应提示只能整学期删除",
+            rule.onAllNodesWithText("只能整学期删除", substring = true).fetchSemanticsNodes().isNotEmpty()
+        )
+        // 整学期删除仍然有效
+        rule.onNodeWithTag("confirmDeleteButton").performClick()
+        rule.waitForIdle()
+        assertEquals(
+            "整学期删除要生效", 0, visibleTextCount("生产实习")
+        )
+        assertFalse(Repository.loadSchedule().courses.any { it.id == "c9" })
     }
 }

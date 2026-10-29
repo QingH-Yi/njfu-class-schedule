@@ -20,6 +20,9 @@ object Repository {
 
     private val gson = Gson()
     private lateinit var sp: SharedPreferences
+    // 最近一次成功解析的课表。存储 JSON 损坏时用它兜底：
+    // 若直接返回空 Schedule，后续任何 saveSchedule（切校区/存设置）都会把空课表写回 = 清库。
+    private var lastGoodSchedule: Schedule? = null
 
     fun init(context: Context) {
         sp = context.applicationContext.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -35,53 +38,71 @@ object Repository {
     // ---- 课表 ----
     fun loadSchedule(): Schedule {
         val json = sp.getString(K_SCHEDULE, null) ?: return Schedule()
-        return try {
-            val obj = JSONObject(json)
-            val arr = obj.optJSONArray("courses")
-            val seenIds = HashSet<String>()
-            val courses = buildList {
-                for (i in 0 until arr.length()) {
-                    val r = arr.optJSONObject(i) ?: continue
-                    val name = jStr(r, "name").trim()
-                    if (name.isEmpty()) continue
-                    val start = r.optInt("startPeriod", 1).coerceIn(1, 11)
-                    val id0 = jStr(r, "id").ifBlank { UUID.randomUUID().toString().take(8) }
-                    add(
-                        Course(
-                            id = if (seenIds.add(id0)) id0 else UUID.randomUUID().toString().take(8),
-                            name = name,
-                            teacher = jStr(r, "teacher"),
-                            location = jStr(r, "location"),
-                            day = r.optInt("day", 0).coerceIn(0, 7),
-                            startPeriod = start,
-                            endPeriod = r.optInt("endPeriod", start).coerceIn(1, 11).coerceAtLeast(start),
-                            weeks = r.optJSONArray("weeks")?.let { w ->
-                                (0 until w.length()).mapNotNull { k ->
-                                    val v = w.optInt(k, -1)
-                                    if (v in 1..53) v else null
-                                }.distinct().sorted()
-                            }.orEmpty(),
-                            startTime = jStr(r, "startTime"),
-                            endTime = jStr(r, "endTime"),
-                            note = jStr(r, "note"),
-                            credit = jStr(r, "credit"),
-                            kind = jStr(r, "kind"),
-                            edited = r.optBoolean("edited", false)
-                        )
-                    )
-                }
-            }
-            Schedule(
-                term = jStr(obj, "term"),
-                termStartMonday = jStr(obj, "termStartMonday").ifBlank { Schedule().termStartMonday },
-                campus = jStr(obj, "campus").ifBlank { "xz" },
-                // 同位置重复的课合并周次：重复条目在网格里只显示一条、另一条被吞，
-                // 表现为"课程时有时无"。加载时修一次，旧数据里的历史重复也随之消失。
-                courses = unionSameSlotCourses(courses)
-            )
+        val parsed = try {
+            parseScheduleJson(json)
         } catch (e: Exception) {
-            Schedule()
+            null
         }
+        if (parsed == null) {
+            // 坏 JSON 留底供找回；返回最近一次成功解析的课表，绝不让"空课表"流进界面
+            sp.edit().putString("schedule_corrupt", json).apply()
+            return lastGoodSchedule ?: Schedule()
+        }
+        lastGoodSchedule = parsed
+        return parsed
+    }
+
+    private fun parseScheduleJson(json: String): Schedule {
+        val obj = JSONObject(json)
+        val arr = obj.optJSONArray("courses") ?: throw IllegalStateException("no courses array")
+        val seenIds = HashSet<String>()
+        val courses = buildList {
+            for (i in 0 until arr.length()) {
+                val r = arr.optJSONObject(i) ?: continue
+                val name = jStr(r, "name").trim()
+                if (name.isEmpty()) continue
+                val start = r.optInt("startPeriod", 1).coerceIn(1, 11)
+                val id0 = jStr(r, "id").ifBlank { UUID.randomUUID().toString().take(8) }
+                add(
+                    Course(
+                        id = if (seenIds.add(id0)) id0 else UUID.randomUUID().toString().take(8),
+                        name = name,
+                        teacher = jStr(r, "teacher"),
+                        location = jStr(r, "location"),
+                        day = r.optInt("day", 0).coerceIn(0, 7),
+                        startPeriod = start,
+                        endPeriod = r.optInt("endPeriod", start).coerceIn(1, 11).coerceAtLeast(start),
+                        weeks = r.optJSONArray("weeks")?.let { w ->
+                            (0 until w.length()).mapNotNull { k ->
+                                val v = w.optInt(k, -1)
+                                if (v in 1..53) v else null
+                            }.distinct().sorted()
+                        }.orEmpty(),
+                        startTime = jStr(r, "startTime"),
+                        endTime = jStr(r, "endTime"),
+                        note = jStr(r, "note"),
+                        credit = jStr(r, "credit"),
+                        kind = jStr(r, "kind"),
+                        edited = r.optBoolean("edited", false)
+                    )
+                )
+            }
+        }
+        return Schedule(
+            term = jStr(obj, "term"),
+            termStartMonday = jStr(obj, "termStartMonday").ifBlank { Schedule().termStartMonday },
+            campus = jStr(obj, "campus").ifBlank { "xz" },
+            // 同位置重复的课合并周次：重复条目在网格里只显示一条、另一条被吞，
+            // 表现为"课程时有时无"。加载时修一次，旧数据里的历史重复也随之消失。
+            courses = unionSameSlotCourses(courses)
+        )
+    }
+
+    /** 按 id 找课；找不到（后台重抓会重新生成 id，弹窗开着时数据可能被覆盖）按 名称|星期|起始节 兜底 */
+    private fun findCourseIndex(courses: List<Course>, course: Course): Int {
+        val byId = courses.indexOfFirst { it.id == course.id }
+        if (byId >= 0) return byId
+        return courses.indexOfFirst { courseKeyOf(it) == courseKeyOf(course) }
     }
 
     fun saveSchedule(s: Schedule) {
@@ -120,11 +141,20 @@ object Repository {
             it.copy(note = m?.first ?: "", credit = m?.second ?: "")
         }
         if (keepEdited) {
-            // 保留用户手动改过的课：先去掉教务里同位置(名称|星期|起始节)的，再把手改的追加回去
+            // 保留用户手动改过的课：教务里被某条手改课"占据"的课不导入，再把手改的追加回去。
+            // 占据 = 同名 + 同星期 + 周次有交集（同一门课的同一批周次）。
+            // 不能只按 名称|星期|起始节 键挡：挪过节次的课会漏（教务旧位置"幽灵课"被导回）；
+            // 也不能要求时段重叠：挪槽后新旧时段本来就不重叠。周次不交集的同名课（单双周
+            // 不同老师）不受影响。
             val edited = cur.courses.filter { it.edited }
             if (edited.isNotEmpty()) {
-                val keys = edited.map { "${it.name}|${it.day}|${it.startPeriod}" }.toSet()
-                merged = merged.filter { "${it.name}|${it.day}|${it.startPeriod}" !in keys } + edited
+                merged = merged.filter { nw ->
+                    edited.none { e ->
+                        e.name.trim() == nw.name.trim() && e.day == nw.day &&
+                            (e.weeks.isEmpty() || nw.weeks.isEmpty() ||
+                                e.weeks.intersect(nw.weeks.toSet()).isNotEmpty())
+                    }
+                } + edited
             }
             // 用户整学期删掉的课：抓回来的同位置课不再导入，否则"删了又回来"
             val dk = deletedKeys()
@@ -144,11 +174,13 @@ object Repository {
     /** 被用户手动编辑过的课程 */
     fun editedCourses(): List<Course> = loadSchedule().courses.filter { it.edited }
 
-    /** 更新某门课的备忘录与学分 */
-    fun updateCourseMeta(id: String, note: String, credit: String) {
+    /** 更新某门课的备忘录与学分（id 找不到时按 名称|星期|起始节 兜底，防重抓换 id 后保存静默丢失） */
+    fun updateCourseMeta(course: Course, note: String, credit: String) {
         val cur = loadSchedule()
-        saveSchedule(cur.copy(courses = cur.courses.map {
-            if (it.id == id) it.copy(note = note, credit = credit) else it
+        val idx = findCourseIndex(cur.courses, course)
+        if (idx < 0) return
+        saveSchedule(cur.copy(courses = cur.courses.mapIndexed { i, c ->
+            if (i == idx) c.copy(note = note, credit = credit) else c
         }))
     }
 
@@ -168,7 +200,7 @@ object Repository {
         slots: List<Triple<Int, Int, Int>>, weeks: List<Int>, onlyThisWeek: Boolean, currentWeek: Int
     ) {
         val cur = loadSchedule()
-        val idx = cur.courses.indexOfFirst { it.id == course.id }
+        val idx = findCourseIndex(cur.courses, course)
         if (idx < 0) return
         val nm = name.trim()
         val tc = teacher.trim()
@@ -298,7 +330,8 @@ object Repository {
      */
     fun deleteCourse(course: Course, onlyThisWeek: Boolean, currentWeek: Int, syncSameName: Boolean) {
         val cur = loadSchedule()
-        val self = cur.courses.firstOrNull { it.id == course.id } ?: course
+        val selfIdx = findCourseIndex(cur.courses, course)
+        val self = if (selfIdx >= 0) cur.courses[selfIdx] else course
         val targets = if (syncSameName) {
             val group = sameNameCoursesThisWeek(cur, self, currentWeek)
             if (group.any { it.id == self.id }) group else group + self

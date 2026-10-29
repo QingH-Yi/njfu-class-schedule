@@ -622,7 +622,7 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                         enabled = noteDirty,
                         onClick = {
                             // 学分以爬取的为准（只读），保存时原样带回归里
-                            Repository.updateCourseMeta(c.id, note.trim(), c.credit ?: "")
+                            Repository.updateCourseMeta(c, note.trim(), c.credit ?: "")
                             schedule = Repository.loadSchedule()
                             detail = schedule.courses.firstOrNull { it.id == c.id } ?: c0
                         }
@@ -1512,6 +1512,7 @@ fun EditCourseDialog(
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { syncSameName = !syncSameName }
+                        .testTag("editSyncRow")
                 ) {
                     Checkbox(checked = syncSameName, onCheckedChange = { syncSameName = it })
                     Text("同步修改本周所有「${course.name}」课（共 $sameNameCount 节）", fontSize = 13.sp, color = th.textPrimary)
@@ -1523,11 +1524,16 @@ fun EditCourseDialog(
                     )
                 }
             }
-            // 勾选"同步"时把时段选择器预填成本周整门课的并集（首次进入即对齐）
+            // 勾选"同步"时把时段选择器预填成本周整门课的并集；取消勾选要还原成这一节自己的时段
+            //（否则带着并集保存"只改这一节"，会把这一节拆成覆盖并集的多条课 → 重复）
             LaunchedEffect(syncSameName) {
-                if (syncSameName && course.day != 0) {
-                    val u = unionSlots(sameNameCourses)
-                    if (u.isNotEmpty()) slots = u
+                if (course.day != 0) {
+                    slots = if (syncSameName) {
+                        val u = unionSlots(sameNameCourses)
+                        if (u.isNotEmpty()) u else slots
+                    } else {
+                        (course.startPeriod..course.endPeriod).map { course.day to it }.toSet()
+                    }
                 }
             }
             Spacer(Modifier.height(16.dp))
@@ -1540,7 +1546,7 @@ fun EditCourseDialog(
                         if (thisWeekOnly) listOf(currentWeek) else parseWeeksText(weeksText),
                         thisWeekOnly, syncSameName && sameNameCount > 1
                     )
-                }) { Text("保存") }
+                }, modifier = Modifier.testTag("editSaveButton")) { Text("保存") }
             }
         }
     }
@@ -1561,6 +1567,9 @@ fun DeleteCourseDialog(
     onConfirm: (onlyThisWeek: Boolean, syncSameName: Boolean) -> Unit
 ) {
     val sameNameCount = sameNameCourses.size
+    // 这门课不在当前周的课表里（如"显示非本周课程"的半透明课）时，"仅第 N 周"删了等于没删，
+    // 只提供整学期删除，不给无效选项
+    val canThisWeek = course.weeks.isEmpty() || currentWeek in course.weeks
     var wholeTerm by remember { mutableStateOf(true) }
     var syncSameName by remember { mutableStateOf(sameNameCount > 1) }
 
@@ -1581,21 +1590,28 @@ fun DeleteCourseDialog(
                 Text(sub, fontSize = 11.sp, color = th.textSecondary)
             }
             Spacer(Modifier.height(12.dp))
-            Text("删除范围", fontSize = 12.sp, color = th.textSecondary)
-            Spacer(Modifier.height(4.dp))
-            SegmentedControl(
-                th, listOf("整个学期", "仅第 $currentWeek 周"),
-                if (wholeTerm) 0 else 1, { wholeTerm = it == 0 },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                if (wholeTerm)
-                    "所有周的这门课都会移除；重新抓取或自动更新也不会再导入它。"
-                else
-                    "只把这门课从第 $currentWeek 周的课表里去掉，其他周不受影响。",
-                fontSize = 11.sp, lineHeight = 15.sp, color = th.textSecondary
-            )
+            if (canThisWeek) {
+                Text("删除范围", fontSize = 12.sp, color = th.textSecondary)
+                Spacer(Modifier.height(4.dp))
+                SegmentedControl(
+                    th, listOf("整个学期", "仅第 $currentWeek 周"),
+                    if (wholeTerm) 0 else 1, { wholeTerm = it == 0 },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (wholeTerm)
+                        "所有周的这门课都会移除；重新抓取或自动更新也不会再导入它。"
+                    else
+                        "只把这门课从第 $currentWeek 周的课表里去掉，其他周不受影响。",
+                    fontSize = 11.sp, lineHeight = 15.sp, color = th.textSecondary
+                )
+            } else {
+                Text(
+                    "这门课不在第 $currentWeek 周的课表里，只能整学期删除。",
+                    fontSize = 11.sp, lineHeight = 15.sp, color = th.textSecondary
+                )
+            }
             if (sameNameCount > 1) {
                 Spacer(Modifier.height(10.dp))
                 Row(
@@ -1623,7 +1639,7 @@ fun DeleteCourseDialog(
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = dangerRed(th)),
                     modifier = Modifier.testTag("confirmDeleteButton"),
-                    onClick = { onConfirm(!wholeTerm, syncSameName && sameNameCount > 1) }
+                    onClick = { onConfirm(!wholeTerm && canThisWeek, syncSameName && sameNameCount > 1) }
                 ) { Text("删除") }
             }
         }
@@ -1944,7 +1960,7 @@ fun SettingsDialog(
                     }
                     Repository.autoUpdate = auto
                     Repository.jwUrl = url.trim()
-                    Repository.weekOverride = weekOverride.toIntOrNull() ?: 0
+                    Repository.weekOverride = weekOverride.toIntOrNull()?.takeIf { it in 1..53 } ?: 0
                     Repository.saveSchedule(schedule.copy(termStartMonday = start))
                     Repository.themeMode = mode
                     Repository.paletteId = paletteId
@@ -2142,9 +2158,9 @@ guid(function(g){
 }
 
 
-/** 计算当前教学周：优先手动指定，否则按第一周周一推算 */
+/** 计算当前教学周：优先手动指定（1..53 之外视为没填，防手滑填出"第 99 周"），否则按第一周周一推算 */
 fun resolveCurrentWeek(startMonday: String): Int {
-    if (Repository.weekOverride > 0) return Repository.weekOverride
+    if (Repository.weekOverride in 1..53) return Repository.weekOverride
     return try {
         val start = LocalDate.parse(startMonday, DATE_FMT)
         val diff = ChronoUnit.DAYS.between(start, LocalDate.now())

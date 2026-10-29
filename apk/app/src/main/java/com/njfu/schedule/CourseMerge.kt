@@ -53,4 +53,40 @@ fun unionSlots(courses: List<Course>): Set<Pair<Int, Int>> =
         .flatMap { c -> (c.startPeriod..c.endPeriod).map { c.day to it } }
         .toSet()
 
+/** 课程的存储位置键：名称|星期|起始节（与 replaceCourses 的保留/匹配键一致） */
+fun courseKeyOf(c: Course): String = "${c.name}|${c.day}|${c.startPeriod}"
+
+/**
+ * 数据修复：同一位置（名称/星期/起止节/老师/教室/类型 全同）出现多条课时，合并成一条、周次取并集。
+ *
+ * 背景："仅本周"编辑/删除会在同位置拆出多条不同周次的课；旧版本 bug 或异常数据也可能产生
+ * 重复条目。重复条目在课表网格里只会显示一条（另一条被重叠裁剪悄悄吞掉），看起来就是
+ * "课程有时有、有时没有"。入库/加载时并成一条，显示层就稳定了。
+ * 老师或教室不同的不算重复（可能真是两门并排课），不动。
+ */
+fun unionSameSlotCourses(courses: List<Course>): List<Course> {
+    if (courses.size < 2) return courses
+    val out = ArrayList<Course>(courses.size)
+    val index = HashMap<String, Int>()
+    for (c in courses) {
+        val key = "${c.name.trim()}|${c.day}|${c.startPeriod}|${c.endPeriod}|" +
+                "${c.teacher.trim()}|${c.location.trim()}|${c.kind}"
+        val at = index[key]
+        if (at == null) {
+            index[key] = out.size
+            out.add(c)
+        } else {
+            val prev = out[at]
+            out[at] = prev.copy(
+                weeks = if (prev.weeks == c.weeks) prev.weeks
+                else (prev.weeks + c.weeks).distinct().sorted(),
+                edited = prev.edited || c.edited,
+                note = prev.note?.takeIf { it.isNotEmpty() } ?: c.note,
+                credit = prev.credit?.takeIf { it.isNotEmpty() } ?: c.credit
+            )
+        }
+    }
+    return out
+}
+
 

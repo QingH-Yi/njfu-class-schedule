@@ -238,6 +238,9 @@ val SETTING_TINTS = listOf(
     Color(0xFF57B6C4)  // 青
 )
 
+/** 删除等危险操作的红色（深浅色各取一档，保证在明暗两种卡片上都看得清） */
+fun dangerRed(th: AppColors): Color = if (th.dark) Color(0xFFEF5350) else Color(0xFFD63A2F)
+
 /** 设置分组标题：强调色小竖条 + 图标 + 标题，统一节奏（比纯文字更有层次） */
 @Composable
 fun SectionTitle(text: String, color: Color, icon: String = "") {

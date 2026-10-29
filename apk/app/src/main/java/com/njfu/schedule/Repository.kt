@@ -16,6 +16,7 @@ object Repository {
     private const val K_PASS = "pass"
     private const val K_AUTO = "auto_update"
     private const val K_SAVED_PASS = "saved_pass"
+    private const val K_DELETED = "deleted_keys"
 
     private val gson = Gson()
     private lateinit var sp: SharedPreferences
@@ -74,7 +75,9 @@ object Repository {
                 term = jStr(obj, "term"),
                 termStartMonday = jStr(obj, "termStartMonday").ifBlank { Schedule().termStartMonday },
                 campus = jStr(obj, "campus").ifBlank { "xz" },
-                courses = courses
+                // 同位置重复的课合并周次：重复条目在网格里只显示一条、另一条被吞，
+                // 表现为"课程时有时无"。加载时修一次，旧数据里的历史重复也随之消失。
+                courses = unionSameSlotCourses(courses)
             )
         } catch (e: Exception) {
             Schedule()
@@ -93,7 +96,12 @@ object Repository {
             val dup = list.firstOrNull {
                 it.name == nc.name && it.day == nc.day && it.startPeriod == nc.startPeriod
             }
-            if (dup == null) { list.add(nc); added++ }
+            if (dup == null) {
+                // 手动加的课视为"用户编辑过"：重抓/自动更新时默认保留，不会被教务数据悄悄覆盖掉
+                list.add(nc.copy(edited = true)); added++
+                // 同位置的"已删除"记录一并撤销（删了又手动加回来 = 用户要它）
+                forgetDeletedKeys(listOf(courseKeyOf(nc)))
+            }
         }
         val newTerm = if (term.isNotEmpty() && cur.term.isEmpty()) term else cur.term
         saveSchedule(cur.copy(term = newTerm, courses = list))
@@ -118,6 +126,12 @@ object Repository {
                 val keys = edited.map { "${it.name}|${it.day}|${it.startPeriod}" }.toSet()
                 merged = merged.filter { "${it.name}|${it.day}|${it.startPeriod}" !in keys } + edited
             }
+            // 用户整学期删掉的课：抓回来的同位置课不再导入，否则"删了又回来"
+            val dk = deletedKeys()
+            if (dk.isNotEmpty()) merged = merged.filter { courseKeyOf(it) !in dk }
+        } else {
+            // 用户明确选了"用教务的"：按教务数据重置，已删记录一并清掉
+            clearDeletedKeys()
         }
         saveSchedule(
             cur.copy(
@@ -180,7 +194,9 @@ object Repository {
                 else -> {
                     val origWeeks = if (c.weeks.isEmpty()) (1..53).toList() else c.weeks
                     val remain = origWeeks.filter { it != currentWeek }
-                    if (remain.isNotEmpty()) out.add(c.copy(weeks = remain.sorted()))
+                    // 其余周次保留的那条也要标 edited：不标的话重抓/自动更新会把完整周次覆盖回来，
+                    // 本周"拆出去"的课和它重叠 → 课程显示时有时无（用户报的显示混乱根因之一）
+                    if (remain.isNotEmpty()) out.add(c.copy(weeks = remain.sorted(), edited = true))
                     for (sl in norm) out.add(c.copy(id = UUID.randomUUID().toString().take(8),
                         name = nm2, teacher = tc, location = lo, day = sl.first,
                         startPeriod = sl.second, endPeriod = sl.third, weeks = listOf(currentWeek), edited = true))
@@ -273,6 +289,64 @@ object Repository {
         val out = cur.courses.filter { it.id !in groupIds } + replacements
         saveSchedule(cur.copy(courses = out))
     }
+    /**
+     * 删除课程。
+     * onlyThisWeek=false：整学期删除 —— 直接移除，并记入"已删除"位置，重抓/自动更新不再导回
+     *                     （用户在手动导入时选"用教务的"重置，才会恢复）。
+     * onlyThisWeek=true ：只删本周 —— 把这一周从周次里拆掉并标 edited；周次删空则整门移除。
+     * syncSameName=true ：本周内所有同名课一起删。
+     */
+    fun deleteCourse(course: Course, onlyThisWeek: Boolean, currentWeek: Int, syncSameName: Boolean) {
+        val cur = loadSchedule()
+        val self = cur.courses.firstOrNull { it.id == course.id } ?: course
+        val targets = if (syncSameName) {
+            val group = sameNameCoursesThisWeek(cur, self, currentWeek)
+            if (group.any { it.id == self.id }) group else group + self
+        } else {
+            listOf(self)
+        }
+        if (targets.isEmpty()) return
+        val ids = targets.map { it.id }.toSet()
+        val out = ArrayList<Course>(cur.courses.size)
+        if (!onlyThisWeek) {
+            rememberDeletedKeys(targets.map { courseKeyOf(it) })
+            for (c in cur.courses) if (c.id !in ids) out.add(c)
+        } else {
+            for (c in cur.courses) {
+                if (c.id !in ids) { out.add(c); continue }
+                val origWeeks = if (c.weeks.isEmpty()) (1..53).toList() else c.weeks
+                val remain = origWeeks.filter { it != currentWeek }
+                if (remain.isNotEmpty()) out.add(c.copy(weeks = remain.sorted(), edited = true))
+                // 周次删空 = 这门课只有这一周 → 整门移除
+            }
+        }
+        saveSchedule(cur.copy(courses = out))
+    }
+
+    // ---- 已删除课程（防止重抓导回）----
+    /** 用户整学期删除的课程位置（名称|星期|起始节）。重抓课表时这些位置的课不再导入。 */
+    fun deletedKeys(): Set<String> =
+        sp.getStringSet(K_DELETED, emptySet())?.toSet() ?: emptySet()
+
+    fun rememberDeletedKeys(keys: Collection<String>) {
+        val add = keys.filter { it.isNotBlank() }.toSet()
+        if (add.isEmpty()) return
+        val cur = deletedKeys().toMutableSet()
+        cur.addAll(add)
+        sp.edit().putStringSet(K_DELETED, cur).apply()
+    }
+
+    fun forgetDeletedKeys(keys: Collection<String>) {
+        if (keys.isEmpty()) return
+        val cur = deletedKeys().toMutableSet()
+        cur.removeAll(keys.toSet())
+        sp.edit().putStringSet(K_DELETED, cur).apply()
+    }
+
+    private fun clearDeletedKeys() {
+        sp.edit().putStringSet(K_DELETED, emptySet()).apply()
+    }
+
     fun mergeCreditsRounds(rounds: List<Map<String, String>>): Map<String, String> {
         if (rounds.size != 3) return emptyMap()
         val first = rounds[0]

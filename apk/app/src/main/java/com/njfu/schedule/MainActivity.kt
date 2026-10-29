@@ -353,6 +353,7 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
     var gridView by remember { mutableStateOf(true) }
     var detail by remember { mutableStateOf<Course?>(null) }
     var editTarget by remember { mutableStateOf<Course?>(null) }
+    var deleteTarget by remember { mutableStateOf<Course?>(null) }
     var addReq by remember { mutableStateOf<Triple<Int, Int, Int>?>(null) } // 星期,节次,查看的周
     var showTutorial by remember { mutableStateOf(Repository.showTutorial) }
 
@@ -631,6 +632,10 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                         Text("编辑", color = th.accent)
                     }
                     Spacer(Modifier.width(4.dp))
+                    TextButton(onClick = { deleteTarget = c }, modifier = Modifier.testTag("detailDeleteButton")) {
+                        Text("删除", color = dangerRed(th))
+                    }
+                    Spacer(Modifier.width(4.dp))
                     TextButton(onClick = close) { Text("关闭", color = th.textSecondary) }
                 }
             }
@@ -653,6 +658,24 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                 }
                 schedule = Repository.loadSchedule()
                 editTarget = null
+                detail = null
+                refreshState.value++   // 整界面重载，确保生效
+            }
+        )
+    }
+
+    // 删除课程：详情弹窗点「删除」→ 确认框里选范围（整个学期 / 仅本周），防误删
+    deleteTarget?.let { del ->
+        val cur = schedule.courses.firstOrNull { it.id == del.id } ?: del
+        val sameName = sameNameCoursesThisWeek(schedule, cur, currentWeek)
+        DeleteCourseDialog(
+            course = cur, currentWeek = currentWeek, th = th,
+            sameNameCourses = sameName,
+            onDismiss = { deleteTarget = null },
+            onConfirm = { onlyThisWeek, syncSameName ->
+                Repository.deleteCourse(cur, onlyThisWeek, currentWeek, syncSameName)
+                schedule = Repository.loadSchedule()
+                deleteTarget = null
                 detail = null
                 refreshState.value++   // 整界面重载，确保生效
             }
@@ -1518,6 +1541,90 @@ fun EditCourseDialog(
                         thisWeekOnly, syncSameName && sameNameCount > 1
                     )
                 }) { Text("保存") }
+            }
+        }
+    }
+}
+
+/**
+ * 删除课程确认框：范围可选【整个学期 / 仅第 N 周】，与编辑弹窗同款分段选择器 + 勾选行。
+ * 整学期删除会记住位置：重新抓取/自动更新也不会把这门课导回来；
+ * 想恢复就在手动导入时选「用教务的」（重置），或重新手动添加。
+ */
+@Composable
+fun DeleteCourseDialog(
+    course: Course,
+    currentWeek: Int,
+    th: AppColors,
+    sameNameCourses: List<Course> = listOf(course),
+    onDismiss: () -> Unit,
+    onConfirm: (onlyThisWeek: Boolean, syncSameName: Boolean) -> Unit
+) {
+    val sameNameCount = sameNameCourses.size
+    var wholeTerm by remember { mutableStateOf(true) }
+    var syncSameName by remember { mutableStateOf(sameNameCount > 1) }
+
+    MacDialog(color = th.surface, onDismissRequest = onDismiss) { close ->
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            DialogHeader(th, "删除课程", "🗑️")
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "「${course.name}」", fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
+                color = th.textPrimary
+            )
+            val sub = listOfNotNull(
+                if (course.day == 0) "整周安排" else "${dayName(course.day)} 第${course.startPeriod}-${course.endPeriod}节",
+                course.location.ifEmpty { null }
+            ).joinToString(" · ")
+            if (sub.isNotEmpty()) {
+                Spacer(Modifier.height(2.dp))
+                Text(sub, fontSize = 11.sp, color = th.textSecondary)
+            }
+            Spacer(Modifier.height(12.dp))
+            Text("删除范围", fontSize = 12.sp, color = th.textSecondary)
+            Spacer(Modifier.height(4.dp))
+            SegmentedControl(
+                th, listOf("整个学期", "仅第 $currentWeek 周"),
+                if (wholeTerm) 0 else 1, { wholeTerm = it == 0 },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (wholeTerm)
+                    "所有周的这门课都会移除；重新抓取或自动更新也不会再导入它。"
+                else
+                    "只把这门课从第 $currentWeek 周的课表里去掉，其他周不受影响。",
+                fontSize = 11.sp, lineHeight = 15.sp, color = th.textSecondary
+            )
+            if (sameNameCount > 1) {
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { syncSameName = !syncSameName }
+                ) {
+                    Checkbox(checked = syncSameName, onCheckedChange = { syncSameName = it })
+                    Text(
+                        "本周所有「${course.name}」课一起删（共 $sameNameCount 节）",
+                        fontSize = 13.sp, color = th.textPrimary
+                    )
+                }
+                if (syncSameName) {
+                    Text(
+                        "本周这几节会一起删除。取消勾选则只删这一节。",
+                        fontSize = 11.sp, color = th.textSecondary
+                    )
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = close) { Text("取消", color = th.textSecondary) }
+                Spacer(Modifier.width(6.dp))
+                Button(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = dangerRed(th)),
+                    modifier = Modifier.testTag("confirmDeleteButton"),
+                    onClick = { onConfirm(!wholeTerm, syncSameName && sameNameCount > 1) }
+                ) { Text("删除") }
             }
         }
     }

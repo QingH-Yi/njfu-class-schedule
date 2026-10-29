@@ -6,6 +6,7 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -295,5 +296,65 @@ class MainScreenRobolectricTest {
         assertTrue("应列出抹茶色系", hasText("抹茶"))
         assertTrue("应有主题模式分段", hasText("主题模式"))
         assertTrue("应有第一周周一", hasText("第一周周一"))
+    }
+
+    /** 当前可见的课程格文本节点数（相邻 3 页离屏页 bounds 为 0 但文本仍在，必须过滤） */
+    private fun visibleTextCount(name: String): Int =
+        rule.onAllNodesWithText(name).fetchSemanticsNodes()
+            .count { it.boundsInRoot.width > 0f && it.boundsInRoot.height > 0f }
+
+    /** 打开一门课的详情弹窗：单击选中 + 再单击（网格手势是 pointerInput，注入真实触摸才触发） */
+    private fun openDetail(name: String) {
+        val nodes = rule.onAllNodesWithText(name).fetchSemanticsNodes()
+        val visible = nodes.withIndex().filter { it.value.boundsInRoot.width > 0f && it.value.boundsInRoot.height > 0f }
+        assertTrue("应能找到可见的课程格：$name", visible.isNotEmpty())
+        val i = visible.first().index
+        rule.onAllNodesWithText(name)[i].performClick()
+        rule.waitForIdle()
+        // 第二次用 doubleClick（与 blankCell 用例同款）：两次独立单击会被双击检测窗口吞掉
+        rule.onAllNodesWithText(name)[i].performTouchInput { doubleClick() }
+        rule.waitForIdle()
+    }
+
+    @Test
+    @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
+    fun deleteCourseFlowWholeSemesterRemovesFromGrid() {
+        seed()
+        rule.setContent { ScheduleApp(mutableStateOf(0)) }
+        rule.waitForIdle()
+        openDetail("信号与系统分析")
+        assertTrue("应打开详情弹窗", hasText("教室"))
+        // 详情底部「删除」→ 确认框（默认整学期）→ 确认删除
+        rule.onNodeWithTag("detailDeleteButton").performClick()
+        rule.waitForIdle()
+        assertTrue("应弹出删除确认框", hasText("删除范围"))
+        rule.onNodeWithTag("confirmDeleteButton").performClick()
+        rule.waitForIdle()
+        assertEquals(
+            "删除后网格里不该再有这门课", 0, visibleTextCount("信号与系统分析")
+        )
+    }
+
+    @Test
+    @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
+    fun deleteCourseThisWeekOnlyKeepsOtherWeeks() {
+        seed()  // 信号与系统分析 1-16 周；当前周固定第 7 周
+        rule.setContent { ScheduleApp(mutableStateOf(0)) }
+        rule.waitForIdle()
+        openDetail("信号与系统分析")
+        rule.onNodeWithTag("detailDeleteButton").performClick()
+        rule.waitForIdle()
+        // 切到「仅第 7 周」再确认
+        rule.onAllNodesWithText("仅第 7 周")[0].performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("confirmDeleteButton").performClick()
+        rule.waitForIdle()
+        // 第 7 周不再显示（相邻周页面上还有，但离屏不可见）；数据里其余周次保留
+        assertEquals(
+            "第 7 周不该再显示这门课", 0, visibleTextCount("信号与系统分析")
+        )
+        val c = Repository.loadSchedule().courses.first { it.id == "c2" }
+        assertEquals("其余周次要保留", "1-6,8-16", formatWeeks(c.weeks))
+        assertTrue("拆剩的课要标 edited（防重抓覆盖回完整周次）", c.edited)
     }
 }

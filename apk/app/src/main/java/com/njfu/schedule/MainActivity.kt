@@ -1025,7 +1025,9 @@ fun TimetableView(
                                         .height(slotH * 11)
                                         .background(if (dates.getOrNull(i) == today) th.todayTint else Color.Transparent)
                                 ) {
-                                    for (seg in remember(week, inWeek, otherWeek) {
+                                    // 键里必须带 d（星期几）：一周起点切换时每列位置对应的 d 变了，
+                                    // 只按 week/inWeek 缓存会返回旧列的课（表现为"日期条换了、课表不动"）
+                                    for (seg in remember(d, week, inWeek, otherWeek) {
                                         daySegments(byDay[d] ?: emptyList(), othersByDay[d] ?: emptyList())
                                     }) {
                                         val c = seg.course

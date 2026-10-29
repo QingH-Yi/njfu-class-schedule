@@ -304,6 +304,50 @@ class MainScreenRobolectricTest {
         rule.onAllNodesWithText(name).fetchSemanticsNodes()
             .count { it.boundsInRoot.width > 0f && it.boundsInRoot.height > 0f }
 
+    /** 切换一周起点（周一/周日）后，课表列序必须跟着换。
+     *  回归：列内容被 remember(week, inWeek, otherWeek) 缓存但键里没有"星期几"，
+     *  起点切换后每列位置对应的星期变了、缓存没失效 → 只有日期条换列、课表不动。 */
+    @Test
+    @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
+    fun weekStartSundayReordersGridColumns() {
+        val ctx = ApplicationProvider.getApplicationContext<Context>()
+        Repository.init(ctx)
+        Repository.checkUpdate = false
+        Repository.showTutorial = false
+        Repository.weekOverride = 7
+        Repository.autoUpdate = false
+        Repository.weekStartSunday = false
+        Repository.saveSchedule(
+            Schedule(
+                "2026-2027-1", "2026-08-31", "xz",
+                listOf(
+                    Course("d1", "周一课", "师A", "101", 1, 1, 2, (1..16).toList()),
+                    Course("d7", "周日课", "师B", "201", 7, 1, 2, (1..16).toList())
+                )
+            )
+        )
+        val refresh = mutableStateOf(0)
+        rule.setContent { ScheduleApp(refresh) }
+        rule.waitForIdle()
+
+        fun leftOf(name: String): Float? =
+            rule.onAllNodesWithText(name).fetchSemanticsNodes()
+                .filter { it.boundsInRoot.width > 0f && it.boundsInRoot.height > 0f }
+                .minByOrNull { it.boundsInRoot.left }?.boundsInRoot?.left
+
+        // 周一起点：周一在第 1 列、周日在第 7 列
+        assertTrue(leftOf("周一课")!! < leftOf("周日课")!!)
+        // 切到周日起点（设置保存会 refreshState++）
+        Repository.weekStartSunday = true
+        refresh.value++
+        rule.waitForIdle()
+        assertTrue(
+            "切周日起点后课表列序要跟着换（周日应跑到第 1 列），" +
+                "周一left=${leftOf("周一课")} 周日left=${leftOf("周日课")}",
+            leftOf("周日课")!! < leftOf("周一课")!!
+        )
+    }
+
     /** 打开一门课的详情弹窗：单击选中 + 再单击（网格手势是 pointerInput，注入真实触摸才触发）。
      *  半透明的"非本周课"单击就直接开详情，所以单击后先看弹窗出没出现，没出再补一次双击。 */
     private fun openDetail(name: String) {

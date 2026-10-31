@@ -564,6 +564,11 @@ object Repository {
         get() = sp.getString("bg_image_uri", "") ?: ""
         set(v) { sp.edit().putString("bg_image_uri", v).apply() }
 
+    /** 已展示过"更新公告"的版本号（同一版本只自动弹一次；用户可在设置里再看） */
+    var announcedTag: String
+        get() = sp.getString("announced_tag", "") ?: ""
+        set(v) { sp.edit().putString("announced_tag", v).apply() }
+
     /** 背景图片明暗遮罩强度 0-100（越高越淡，保证课表文字看得清）；默认 60 */
     var backgroundDim: Int
         get() = sp.getInt("bg_dim", 60)

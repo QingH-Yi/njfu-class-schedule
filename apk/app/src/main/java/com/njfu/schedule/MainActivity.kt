@@ -319,8 +319,8 @@ class MainActivity : ComponentActivity() {
             return false
         }
 
-        /** 拉取 GitHub 最新 Release 的 (版本号, 链接)。国内网络可能连不上，失败返回 null 静默跳过 */
-        fun fetchLatestRelease(): Pair<String, String>? {
+        /** 拉取 GitHub 最新 Release 的 (版本号, 链接, 公告正文)。国内网络可能连不上，失败返回 null 静默跳过 */
+        fun fetchLatestRelease(): Triple<String, String, String>? {
             var conn: HttpURLConnection? = null
             return try {
                 conn = URL(RELEASE_API).openConnection() as HttpURLConnection
@@ -332,7 +332,11 @@ class MainActivity : ComponentActivity() {
                 val json = JSONObject(conn.inputStream.bufferedReader().readText())
                 val tag = json.optString("tag_name")
                 if (tag.isEmpty()) null
-                else tag to json.optString("html_url").ifEmpty { GITHUB_URL }
+                else Triple(
+                    tag,
+                    json.optString("html_url").ifEmpty { GITHUB_URL },
+                    json.optString("body")
+                )
             } catch (e: Exception) {
                 null
             } finally {
@@ -384,8 +388,9 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
     }
     val th = remember(refreshState.value) { currentAppColors(context) }
 
-    // 后台检查新版本（GitHub Release），发现新版在顶部显示横条；连不上就算了
-    var updateInfo by remember { mutableStateOf<Pair<String, String>?>(null) }
+    // 后台检查新版本（GitHub Release），发现新版在顶部显示横条 + 弹"更新公告"（每版本弹一次）；连不上就算了
+    var updateInfo by remember { mutableStateOf<Triple<String, String, String>?>(null) }
+    var showAnnouncement by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         if (Repository.checkUpdate) {
             val remote = withContext(Dispatchers.IO) { MainActivity.fetchLatestRelease() }
@@ -393,6 +398,8 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                 MainActivity.isNewerVersion(remote.first, MainActivity.currentVersionName(context))
             ) {
                 updateInfo = remote
+                // 同一版本只自动弹一次，之后可从顶栏横条或设置里再看
+                if (Repository.announcedTag != remote.first) showAnnouncement = true
             }
         }
     }
@@ -474,15 +481,15 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
         }
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
-            updateInfo?.let { (v, url) ->
+            updateInfo?.let { (v, url, _) ->
                 Text(
-                    "⬇️ 发现新版本 v$v，点击前往下载",
+                    "⬇️ 发现新版本 v$v，点此查看更新公告",
                     fontSize = 12.sp, fontWeight = FontWeight.Medium,
                     color = Color.White,
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(th.accent)
-                        .clickable { openUrl(context, url) }
+                        .clickable { showAnnouncement = true }
                         .padding(horizontal = 14.dp, vertical = 7.dp)
                 )
             }
@@ -718,8 +725,74 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
     if (showTutorial) {
         TutorialDialog(th = th, onDone = { showTutorial = false })
     }
+
+    // 更新公告：发现新版本时自动弹一次（之后从横条/设置里可再看）
+    if (showAnnouncement) {
+        updateInfo?.let { (v, url, body) ->
+            AnnouncementDialog(
+                version = v, body = body, url = url, th = th,
+                onDone = {
+                    Repository.announcedTag = v
+                    showAnnouncement = false
+                }
+            )
+        }
+    }
     }   // Box（背景图层）
     }   // MaterialTheme
+}
+
+/**
+ * 更新公告弹窗：内容来自 GitHub Release 的公告正文（单一数据源，网页/软件内共用）。
+ * 任何方式关闭都记为"已读"，同一版本不再自动弹。
+ */
+@Composable
+fun AnnouncementDialog(version: String, body: String, url: String, th: AppColors, onDone: () -> Unit) {
+    val context = LocalContext.current
+    val display = body.replace("\r\n", "\n").replace("**", "").trim()
+    MacDialog(color = th.surface, onDismissRequest = onDone) { close ->
+        Column(Modifier.fillMaxWidth()) {
+            DialogHeader(th, "🎉 更新公告", "📢")
+            Spacer(Modifier.height(2.dp))
+            Text(
+                version.removePrefix("v").removePrefix("V").let { "南林课程表 v$it" },
+                fontSize = 12.sp, fontWeight = FontWeight.Medium, color = th.accent
+            )
+            Spacer(Modifier.height(8.dp))
+            Column(
+                Modifier
+                    .weight(1f, fill = false)
+                    .heightIn(max = 380.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                if (display.isEmpty()) {
+                    Text(
+                        "本次更新以修复与优化为主，详情见 GitHub Release。",
+                        fontSize = 13.sp, lineHeight = 18.sp, color = th.textPrimary
+                    )
+                } else {
+                    Text(
+                        display,
+                        fontSize = 13.sp, lineHeight = 19.sp, color = th.textPrimary
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+            HorizontalDivider(color = th.divider, thickness = 1.dp)
+            Spacer(Modifier.height(4.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { close() }) { Text("我知道了", color = th.textSecondary) }
+                Spacer(Modifier.width(6.dp))
+                Button(
+                    shape = RoundedCornerShape(12.dp),
+                    onClick = {
+                        openUrl(context, url)
+                        close()
+                    }
+                ) { Text("去下载") }
+            }
+        }
+    }
 }
 
 /**
@@ -1741,6 +1814,10 @@ fun SettingsDialog(
     var showOther by remember { mutableStateOf(Repository.showOtherWeekCourses) }
     var bgUri by remember { mutableStateOf(Repository.backgroundImageUri) }
     var bgDim by remember { mutableStateOf(Repository.backgroundDim) }
+    // 更新公告（设置里手动查看）
+    val annScope = rememberCoroutineScope()
+    var annLoading by remember { mutableStateOf(false) }
+    var annInfo by remember { mutableStateOf<Triple<String, String, String>?>(null) }
 
     // 选图器：系统图片选择器（无需存储权限，返回可读 content:// URI）
     val bgPicker = rememberLauncherForActivityResult(
@@ -1967,6 +2044,24 @@ fun SettingsDialog(
 
                 SectionTitle("关于", th.accent, "ℹ️")
                 SettingsCard(th) {
+                    // 更新公告：拉最新 Release 的公告正文（与自动弹窗共用一套内容）
+                    SettingsRow(th, "📢", SETTING_TINTS[1], "更新公告",
+                        subtitle = if (annLoading) "获取中…" else "看看最新版本更新了什么",
+                        onClick = {
+                            if (annLoading) return@SettingsRow
+                            annLoading = true
+                            annScope.launch {
+                                val remote = withContext(Dispatchers.IO) { MainActivity.fetchLatestRelease() }
+                                annLoading = false
+                                if (remote == null) {
+                                    Toast.makeText(context, "获取失败（连不上 GitHub，稍后再试）", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    annInfo = remote
+                                }
+                            }
+                        }
+                    ) { SettingsChevron(th) }
+                    SettingsDivider(th)
                     SettingsRow(th, "📖", SETTING_TINTS[4], "使用教程",
                         subtitle = "看看怎么用、怎么自动更新",
                         onClick = { onShowTutorial() }) { SettingsChevron(th) }
@@ -2009,6 +2104,11 @@ fun SettingsDialog(
                     Toast.makeText(context, "已保存", Toast.LENGTH_SHORT).show()
                     close()
                 }) { Text("保存") }
+            }
+
+            // 设置里手动查看的更新公告（盖在设置弹窗上层）
+            annInfo?.let { (v, url, body) ->
+                AnnouncementDialog(version = v, body = body, url = url, th = th, onDone = { annInfo = null })
             }
         }
     }

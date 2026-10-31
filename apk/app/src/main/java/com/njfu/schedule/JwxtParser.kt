@@ -30,12 +30,20 @@ object JwxtParser {
         val doc = Jsoup.parse(html)
         val out = LinkedHashMap<String, String>()
         val creditRe = Regex("学分[：:]\\s*([0-9]+(?:\\.[0-9]+)?)")
+        // 同一格塞两门课时，一个 item-box 里会有两组「<p>课名</p>…学分：X」——
+        // 按文档顺序遍历，每个学分归它前面最近的课名（与 web/js/parser.js 的 parseCredits 保持同步）
         for (box in doc.select("div.item-box")) {
-            val name = box.selectFirst("p")?.text()?.trim() ?: continue
-            if (name.isEmpty()) continue
-            val creditSpan = box.select("span").firstOrNull { it.text().contains("学分") } ?: continue
-            val m = creditRe.find(creditSpan.text()) ?: continue
-            out[name] = m.groupValues[1]
+            var name = ""
+            for (el in box.select("p, span")) {
+                val txt = el.text().trim()
+                if (txt.isEmpty()) continue
+                if (el.tagName() == "p") { name = txt; continue }
+                val m = creditRe.find(txt)
+                if (m != null && name.isNotEmpty()) {
+                    out[name] = m.groupValues[1]
+                    name = ""
+                }
+            }
         }
         return out
     }

@@ -475,7 +475,18 @@ object Repository {
         }
         var n = 0
         val list = cur.courses.map { c ->
-            val v = byNorm[norm(c.name)]
+            var v = byNorm[norm(c.name)]
+            if (v == null) {
+                // 课名尾部分组括号两边可能全角/半角不一致（课表"(分组01)" vs 学分页"（分组01）"）：
+                // 逐层剥掉课名尾部的括号段再匹配（学分页侧已做过同样的剥层）
+                var cur2 = c.name
+                while (v == null) {
+                    val mm = tail.find(cur2) ?: break
+                    cur2 = cur2.substring(0, mm.range.first).trim()
+                    if (cur2.isEmpty()) break
+                    v = byNorm[norm(cur2)]
+                }
+            }
             if (v != null && v.isNotEmpty()) { n++; c.copy(credit = v) } else c
         }
         if (n > 0) saveSchedule(cur.copy(courses = list))

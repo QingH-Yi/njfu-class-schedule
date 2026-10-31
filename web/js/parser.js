@@ -503,18 +503,21 @@
   function parseCredits(root) {
     var doc = typeof root === 'string' ? new DOMParser().parseFromString(root, 'text/html') : root;
     var out = {};
-    var m;
     var creditRe = /学分[：:]\s*([0-9]+(?:\.[0-9]+)?)/;
     var boxes = doc.querySelectorAll('div.item-box');
     for (var i = 0; i < boxes.length; i++) {
+      // 同一格塞两门课时，一个 item-box 里会有两组「<p>课名</p>…学分：X」——
+      // 按文档顺序遍历，每个学分归它前面最近的课名（与 JwxtParser.kt 的 parseCredits 保持同步）
       var box = boxes[i];
-      var p = box.querySelector('p');
-      var name = p ? p.textContent.trim() : '';
-      if (!name) continue;
-      var spans = box.querySelectorAll('span');
-      for (var s = 0; s < spans.length; s++) {
-        var mt = creditRe.exec(spans[s].textContent || '');
-        if (mt) { out[name] = mt[1]; break; }
+      var name = '';
+      var kids = box.querySelectorAll('p, span');
+      for (var s = 0; s < kids.length; s++) {
+        var el = kids[s];
+        var txt = (el.textContent || '').trim();
+        if (!txt) continue;
+        if (el.tagName === 'P') { name = txt; continue; }
+        var mt = creditRe.exec(txt);
+        if (mt && name) { out[name] = mt[1]; name = ''; }
       }
     }
     return out;

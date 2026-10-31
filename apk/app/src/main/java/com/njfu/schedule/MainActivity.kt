@@ -587,10 +587,11 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                 ) {
                     if (c.day == 0) InfoRow("⏰", "安排", "整周（周一至周五）", th)
                     else PeriodRows(c, sameName, schedule.campus, th)
-                    InfoRow("📍", "教室", c.location, th)
-                    InfoRow("👨‍🏫", "老师", c.teacher, th)
+                    // 规格：详情固定显示 节次/教室/老师/周次/学分 五行；没数据显 "—"，不整行消失
+                    InfoRow("📍", "教室", c.location.ifEmpty { "—" }, th)
+                    InfoRow("👨‍🏫", "老师", c.teacher.ifEmpty { "—" }, th)
                     InfoRow("🔁", "周次", weekLabel(c.weeks), th)
-                    InfoRow("🎓", "学分", c.credit.orEmpty(), th)
+                    InfoRow("🎓", "学分", c.credit.orEmpty().ifEmpty { "—" }, th)
                     Spacer(Modifier.height(10.dp))
                     HorizontalDivider(color = th.divider, thickness = 1.dp)
                     Spacer(Modifier.height(10.dp))
@@ -651,7 +652,10 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
             sameNameCourses = sameName,
             onDismiss = { editTarget = null },
             onConfirm = { name, teacher, location, slots, weeks, onlyThisWeek, syncSameName ->
-                if (syncSameName) {
+                if (slots.isEmpty() && cur.day != 0) {
+                    // 时段全部清空 = 按所选范围删除（仅本周→拆周次；整学期→整门删，防重抓导回）
+                    Repository.deleteCourse(cur, onlyThisWeek, currentWeek, syncSameName)
+                } else if (syncSameName) {
                     Repository.editCourseSameName(cur, name, teacher, location, slots, weeks, onlyThisWeek, currentWeek)
                 } else {
                     Repository.editCourse(cur, name, teacher, location, slots, weeks, onlyThisWeek, currentWeek)
@@ -1456,7 +1460,9 @@ fun EditCourseDialog(
     var wholeTerm by remember { mutableStateOf(false) }
     var thisWeekOnly by remember { mutableStateOf(false) }
     var syncSameName by remember { mutableStateOf(sameNameCount > 1) }
-    val valid = name.isNotBlank() && (course.day == 0 || slots.isNotEmpty())
+    // 时段全部清空 = 按所选范围删除这门课（普通课）；整周课清空=保持整周，不算删除
+    val deletingByClearing = course.day != 0 && slots.isEmpty()
+    val valid = name.isNotBlank()
 
     MacDialog(color = th.surface, onDismissRequest = onDismiss) { close ->
         Column(Modifier.verticalScroll(rememberScrollState())) {
@@ -1478,9 +1484,19 @@ fun EditCourseDialog(
             )
             Spacer(Modifier.height(4.dp))
             PeriodPicker(slots, th) { slots = it }
-            if (course.day == 0 && slots.isEmpty()) {
-                Spacer(Modifier.height(4.dp))
-                Text("当前：整周安排（不占具体时段）", fontSize = 11.sp, color = th.textSecondary)
+            when {
+                course.day == 0 && slots.isEmpty() -> {
+                    Spacer(Modifier.height(4.dp))
+                    Text("当前：整周安排（不占具体时段）", fontSize = 11.sp, color = th.textSecondary)
+                }
+                deletingByClearing -> {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "时段已全部清空：保存后这门课会按所选范围删除（" +
+                            if (thisWeekOnly) "只删第 $currentWeek 周" else "整个学期都删" + "）。",
+                        fontSize = 11.sp, lineHeight = 15.sp, color = dangerRed(th)
+                    )
+                }
             }
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1585,7 +1601,9 @@ fun DeleteCourseDialog(
             )
             val sub = listOfNotNull(
                 if (course.day == 0) "整周安排" else "${dayName(course.day)} 第${course.startPeriod}-${course.endPeriod}节",
-                course.location.ifEmpty { null }
+                course.location.ifEmpty { null },
+                course.teacher.ifEmpty { null },
+                course.credit?.takeIf { it.isNotEmpty() }?.let { "学分 $it" }
             ).joinToString(" · ")
             if (sub.isNotEmpty()) {
                 Spacer(Modifier.height(2.dp))

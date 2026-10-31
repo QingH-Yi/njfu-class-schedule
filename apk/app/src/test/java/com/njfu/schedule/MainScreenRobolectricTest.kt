@@ -406,6 +406,21 @@ class MainScreenRobolectricTest {
         assertTrue("拆剩的课要标 edited（防重抓覆盖回完整周次）", c.edited)
     }
 
+    /** 详情弹窗规格：节次/教室/老师/周次/学分五行固定显示，没数据的行显 "—" 而不是整行消失 */
+    @Test
+    @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
+    fun detailDialogAlwaysShowsAllFieldRows() {
+        seed()   // 种子里没有学分数据 → 学分行以前会整行消失
+        rule.setContent { ScheduleApp(mutableStateOf(0)) }
+        rule.waitForIdle()
+        openDetail("信号与系统分析")
+        assertTrue("教室行要显示", hasText("教室"))
+        assertTrue("老师行要显示", hasText("老师"))
+        assertTrue("周次行要显示", hasText("周次"))
+        assertTrue("学分行要显示（空值显 —）", hasText("学分"))
+        assertTrue("空值要显占位符", hasText("—"))
+    }
+
     /** 编辑弹窗取消"同步修改"后，时段必须还原成这一节自己的（带着并集保存会炸出重复课） */
     @Test
     @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")

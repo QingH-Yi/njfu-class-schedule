@@ -205,6 +205,59 @@ class RepositoryDeleteTest {
         assertEquals(6, manual!!.day)
     }
 
+    // ---- 重新抓取时检测已删课，弹窗询问 ----
+
+    @Test
+    fun tombstonedCoursesDetectedForReimportDialog() {
+        seed()
+        val c = Repository.loadSchedule().courses.first { it.id == "g1" }
+        Repository.deleteCourse(c, onlyThisWeek = false, currentWeek = 7, syncSameName = false)
+        // 抓回来的课表里 高数(周一) 又出现了 → 弹窗要知道该问什么
+        val names = Repository.tombstonedCoursesIn(
+            listOf(
+                Course("n1", "高等数学", "张三", "教五楼 50320", 1, 1, 2, (1..16).toList()),
+                Course("n2", "大学英语", "李四", "50308", 2, 3, 4, (1..16).toList())
+            )
+        )
+        assertEquals(listOf("高等数学"), names)
+        // 用户选"恢复导入"后（清掉墓碑），再检测应为空
+        Repository.forgetDeletedKeys(Repository.deletedKeys())
+        assertTrue(Repository.tombstonedCoursesIn(listOf(c)).isEmpty())
+    }
+
+    @Test
+    fun restoredCourseKeepsTeacherFromJwxtAndCreditFromMeta() {
+        // 删除 → 选"恢复导入"（keepEdited=false 重置）：老师来自教务、学分按位置保留
+        seed(Course("q1", "大学物理", "王物理", "50401", 4, 1, 2, (1..16).toList()).copy(credit = "4.5"))
+        val q1 = Repository.loadSchedule().courses.first { it.id == "q1" }
+        Repository.deleteCourse(q1, onlyThisWeek = false, currentWeek = 7, syncSameName = false)
+        Repository.replaceCourses(
+            listOf(Course("n9", "大学物理", "教务新老师", "50401", 4, 1, 2, (1..16).toList())),
+            "2026-2027-1", keepEdited = false
+        )
+        val restored = Repository.loadSchedule().courses.first { it.name == "大学物理" }
+        assertEquals("恢复后老师用教务的", "教务新老师", restored.teacher)
+        assertEquals("恢复后学分按原位置带回来", "4.5", restored.credit)
+    }
+
+    // ---- 编辑时老师/教室留空 = 保留原值，不误清 ----
+
+    @Test
+    fun editWithBlankTeacherKeepsOriginalTeacherAndRoom() {
+        seed()
+        val c = Repository.loadSchedule().courses.first { it.id == "g1" }
+        // 只想改课名，老师/教室框清空了 → 不该把"张三/教五楼 50320"抹掉
+        Repository.editCourse(
+            c, "高等数学(甲)", "", "",
+            slots = listOf(Triple(1, 1, 2)), weeks = (1..16).toList(),
+            onlyThisWeek = false, currentWeek = 7
+        )
+        val edited = Repository.loadSchedule().courses.first { it.id == "g1" }
+        assertEquals("高等数学(甲)", edited.name)
+        assertEquals("老师留空应保留原值", "张三", edited.teacher)
+        assertEquals("教室留空应保留原值", "教五楼 50320", edited.location)
+    }
+
     // ---- 编辑回归：仅本周编辑后，其余周次那条必须标 edited ----
 
     @Test

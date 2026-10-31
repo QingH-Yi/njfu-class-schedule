@@ -17,6 +17,7 @@ object Repository {
     private const val K_AUTO = "auto_update"
     private const val K_SAVED_PASS = "saved_pass"
     private const val K_DELETED = "deleted_keys"
+    private const val K_DELETED_META = "deleted_meta"
 
     private val gson = Gson()
     private lateinit var sp: SharedPreferences
@@ -160,8 +161,21 @@ object Repository {
             val dk = deletedKeys()
             if (dk.isNotEmpty()) merged = merged.filter { courseKeyOf(it) !in dk }
         } else {
-            // 用户明确选了"用教务的"：按教务数据重置，已删记录一并清掉
+            // 按教务数据重置：删过的课若选择恢复，把墓碑存档的备忘录/学分原样带回来
+            val meta = deletedMeta()
+            if (meta.isNotEmpty()) {
+                merged = merged.map { c ->
+                    meta[courseKeyOf(c)]?.let { (n, cr) ->
+                        c.copy(
+                            note = n.ifEmpty { c.note },
+                            credit = cr.ifEmpty { c.credit }
+                        )
+                    } ?: c
+                }
+            }
+            // 已删记录一并清掉
             clearDeletedKeys()
+            sp.edit().remove(K_DELETED_META).apply()
         }
         saveSchedule(
             cur.copy(
@@ -203,7 +217,7 @@ object Repository {
         val idx = findCourseIndex(cur.courses, course)
         if (idx < 0) return
         val nm = name.trim()
-        val tc = teacher.trim()
+        val tc = teacher.trim()   // 留空 = 保留原值（下方 per-course 兜底）
         val lo = location.trim()
         val ws = weeks.filter { it in 1..53 }.distinct().sorted()
         val norm = normSlots(slots)
@@ -211,16 +225,18 @@ object Repository {
         cur.courses.forEachIndexed { i, c ->
             if (i != idx) { out.add(c); return@forEachIndexed }
             val nm2 = nm.ifEmpty { c.name }
+            val tc2 = tc.ifEmpty { c.teacher }
+            val lo2 = lo.ifEmpty { c.location }
             val isWholeWeek = c.day == 0 && norm.isEmpty()   // 整周课且没选时间 → 保持整周
             when {
-                isWholeWeek -> out.add(c.copy(name = nm2, teacher = tc, location = lo, weeks = ws, edited = true))
+                isWholeWeek -> out.add(c.copy(name = nm2, teacher = tc2, location = lo2, weeks = ws, edited = true))
                 norm.isEmpty() -> out.add(c)
                 !onlyThisWeek -> {
                     val f = norm.first()
-                    out.add(c.copy(name = nm2, teacher = tc, location = lo, day = f.first,
+                    out.add(c.copy(name = nm2, teacher = tc2, location = lo2, day = f.first,
                         startPeriod = f.second, endPeriod = f.third, weeks = ws, edited = true))
                     for (sl in norm.drop(1)) out.add(c.copy(id = UUID.randomUUID().toString().take(8),
-                        name = nm2, teacher = tc, location = lo, day = sl.first,
+                        name = nm2, teacher = tc2, location = lo2, day = sl.first,
                         startPeriod = sl.second, endPeriod = sl.third, weeks = ws, edited = true))
                 }
                 else -> {
@@ -230,7 +246,7 @@ object Repository {
                     // 本周"拆出去"的课和它重叠 → 课程显示时有时无（用户报的显示混乱根因之一）
                     if (remain.isNotEmpty()) out.add(c.copy(weeks = remain.sorted(), edited = true))
                     for (sl in norm) out.add(c.copy(id = UUID.randomUUID().toString().take(8),
-                        name = nm2, teacher = tc, location = lo, day = sl.first,
+                        name = nm2, teacher = tc2, location = lo2, day = sl.first,
                         startPeriod = sl.second, endPeriod = sl.third, weeks = listOf(currentWeek), edited = true))
                 }
             }
@@ -262,8 +278,9 @@ object Repository {
         val groupIds = group.map { it.id }.toSet()
         val anchor = group.firstOrNull { it.id == course.id } ?: group.first()
         val nm = name.trim().ifEmpty { anchor.name }
-        val tc = teacher.trim()
-        val lo = location.trim()
+        // 老师/教室留空 = 保留原值（组里取第一个非空的），防止编辑时误把已有老师/教室清掉
+        val tc = teacher.trim().ifEmpty { group.firstOrNull { it.teacher.isNotBlank() }?.teacher ?: "" }
+        val lo = location.trim().ifEmpty { group.firstOrNull { it.location.isNotBlank() }?.location ?: "" }
         val ws = weeks.filter { it in 1..53 }.distinct().sorted()
         val norm = normSlots(slots)
 
@@ -343,6 +360,10 @@ object Repository {
         val out = ArrayList<Course>(cur.courses.size)
         if (!onlyThisWeek) {
             rememberDeletedKeys(targets.map { courseKeyOf(it) })
+            // 备忘录/学分随墓碑存档：之后选"恢复导入"时能原样带回来（备忘录是用户手写的，丢了找不回）
+            val meta = deletedMeta()
+            targets.forEach { meta[courseKeyOf(it)] = (it.note ?: "") to (it.credit ?: "") }
+            saveDeletedMeta(meta)
             for (c in cur.courses) if (c.id !in ids) out.add(c)
         } else {
             for (c in cur.courses) {
@@ -374,6 +395,50 @@ object Repository {
         val cur = deletedKeys().toMutableSet()
         cur.removeAll(keys.toSet())
         sp.edit().putStringSet(K_DELETED, cur).apply()
+        val meta = deletedMeta()
+        if (keys.any { meta.containsKey(it) }) {
+            keys.forEach { meta.remove(it) }
+            saveDeletedMeta(meta)
+        }
+    }
+
+    // 墓碑随带的备忘录/学分存档（JSON：key -> {note, credit}）
+    private fun deletedMeta(): MutableMap<String, Pair<String, String>> {
+        val raw = sp.getString(K_DELETED_META, null) ?: return mutableMapOf()
+        return try {
+            val obj = JSONObject(raw)
+            val m = mutableMapOf<String, Pair<String, String>>()
+            for (k in obj.keys()) {
+                val o = obj.optJSONObject(k) ?: continue
+                m[k] = jStr(o, "note") to jStr(o, "credit")
+            }
+            m
+        } catch (e: Exception) {
+            mutableMapOf()
+        }
+    }
+
+    private fun saveDeletedMeta(m: Map<String, Pair<String, String>>) {
+        if (m.isEmpty()) {
+            sp.edit().remove(K_DELETED_META).apply()
+            return
+        }
+        val obj = JSONObject()
+        m.forEach { (k, v) ->
+            val o = JSONObject()
+            o.put("note", v.first)
+            o.put("credit", v.second)
+            obj.put(k, o)
+        }
+        sp.edit().putString(K_DELETED_META, obj.toString()).apply()
+    }
+
+    /** 本次抓到的课里，落在"用户整学期删除过"位置上的课名（去重）。
+     *  非空时导入前要弹窗问用户：恢复这些课，还是维持删除。 */
+    fun tombstonedCoursesIn(newCourses: List<Course>): List<String> {
+        val dk = deletedKeys()
+        if (dk.isEmpty() || newCourses.isEmpty()) return emptyList()
+        return newCourses.filter { courseKeyOf(it) in dk }.map { it.name.trim() }.distinct()
     }
 
     private fun clearDeletedKeys() {

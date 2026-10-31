@@ -129,7 +129,30 @@ class ImportActivity : ComponentActivity() {
         })
     }
 
-    /** 课表入库（keepEdited=是否保留手动修改），随后抓三轮学分 */
+    /**
+     * 导入前的确认弹窗（保留修改 / 恢复删除共用）。
+     * keepOnPositive=true：positive 按钮 = 保留用户数据（keepEdited=true）；
+     * keepOnPositive=false（如"恢复导入"）：positive = 按教务重置（keepEdited=false）。
+     * 弹窗失败（极罕见）兜底走 negative 语义之外的安全路径：无编辑时直接导入。
+     */
+    private fun askKeep(
+        title: String, message: String, positive: String, negative: String,
+        keepOnPositive: Boolean, res: ParseResult
+    ) {
+        try {
+            AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(message)
+                .setCancelable(false)
+                .setPositiveButton(positive) { _, _ -> applyAndFetchCredits(res, keepOnPositive) }
+                .setNegativeButton(negative) { _, _ -> applyAndFetchCredits(res, !keepOnPositive) }
+                .show()
+        } catch (e: Exception) {
+            applyAndFetchCredits(res, keepOnPositive)
+        }
+    }
+
+    /** 课表入库（keepEdited=是否保留手动修改与删除），随后抓三轮学分 */
     private fun applyAndFetchCredits(res: ParseResult, keepEdited: Boolean) {
         Repository.replaceCourses(res.courses, res.term, keepEdited = keepEdited)
         grabbingCredits = true
@@ -235,23 +258,32 @@ class ImportActivity : ComponentActivity() {
                         webView.postDelayed({ finish() }, 1800)
                     }
                     else -> {
-                        // 三轮一致：若用户手动改过课表，先问是否保留
+                        // 三轮一致：若用户手动改过课表 / 整学期删过课，先问怎么处理再入库
                         lastAdded = tableResults[0].courses.size
                         val res = tableResults[0]
-                        if (Repository.editedCourses().isNotEmpty()) {
-                            try {
-                                AlertDialog.Builder(this@ImportActivity)
-                                    .setTitle("保留手动修改？")
-                                    .setMessage("你手动修改过课表。本次导入要保留这些修改吗？")
-                                    .setCancelable(false)
-                                    .setPositiveButton("保留修改") { _, _ -> applyAndFetchCredits(res, true) }
-                                    .setNegativeButton("用教务的") { _, _ -> applyAndFetchCredits(res, false) }
-                                    .show()
-                            } catch (e: Exception) {
-                                applyAndFetchCredits(res, false)
-                            }
-                        } else {
-                            applyAndFetchCredits(res, false)
+                        val edited = Repository.editedCourses().isNotEmpty()
+                        val deletedNames = Repository.tombstonedCoursesIn(res.courses)
+                        when {
+                            edited && deletedNames.isNotEmpty() -> askKeep(
+                                "保留修改和删除？",
+                                "你手动修改过课表，之前还删除过：${deletedNames.joinToString("、")}。" +
+                                    "教务课表里它们又出现了。\n\n保留 = 你的修改和删除都算数；用教务的 = 全部按教务数据重置。",
+                                "保留我的", "用教务的",
+                                keepOnPositive = true, res = res
+                            )
+                            edited -> askKeep(
+                                "保留手动修改？",
+                                "你手动修改过课表。本次导入要保留这些修改吗？",
+                                "保留修改", "用教务的",
+                                keepOnPositive = true, res = res
+                            )
+                            deletedNames.isNotEmpty() -> askKeep(
+                                "恢复删除的课？",
+                                "你之前删除过：${deletedNames.joinToString("、")}，教务课表里它们又出现了。\n\n恢复导入 = 删掉的课导回来；保留删除 = 继续不显示。",
+                                "恢复导入", "保留删除",
+                                keepOnPositive = false, res = res
+                            )
+                            else -> applyAndFetchCredits(res, false)
                         }
                     }
                 }

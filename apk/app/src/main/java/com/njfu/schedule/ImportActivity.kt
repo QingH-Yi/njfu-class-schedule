@@ -183,6 +183,10 @@ class ImportActivity : ComponentActivity() {
         webView.evaluateJavascript(js) { r ->
             if (r.trim('"') == "submitted") {
                 status.text = "已自动填写账号并尝试登录。若页面有验证码或登录失败，请手动完成登录后点右上角抓取。"
+                // 登录提交后主动跳课表页：CAS 默认落点可能是个人中心门户（那里抓不到标准课表格）
+                webView.postDelayed({
+                    try { webView.loadUrl(Repository.jwUrl.ifEmpty { DEFAULT_URL }) } catch (_: Exception) {}
+                }, 2500)
             }
         }
     }

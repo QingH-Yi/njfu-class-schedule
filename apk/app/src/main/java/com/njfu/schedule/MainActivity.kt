@@ -168,7 +168,9 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 在当前页面尝试一次自动登录：只在登录输入框为空时填写，避免覆盖用户正在输入的内容 */
+    /** 在当前页面尝试一次自动登录：只在登录输入框为空时填写，避免覆盖用户正在输入的内容。
+     *  提交成功后主动跳到课表页：CAS 登录后的默认落点可能是个人中心门户，
+     *  停在那里会被抓取脚本抓到门户预览表（结构不同，老师会抓丢）。 */
     private fun autoLoginOnce(wv: WebView) {
         val u = Repository.user
         val p = Repository.pass
@@ -182,7 +184,15 @@ class MainActivity : ComponentActivity() {
                 "var b=document.querySelector('button[type=submit],input[type=submit],#loginBtn,.loginBtn');" +
                 "if(b){b.click();return 'submitted';}return 'nofield';" +
                 "}catch(e){return 'err';}})();"
-        wv.evaluateJavascript(js, null)
+        wv.evaluateJavascript(js) { r ->
+            if (r.contains("submitted")) {
+                wv.postDelayed({
+                    try {
+                        wv.loadUrl(Repository.jwUrl.ifEmpty { "https://jwxt.njfu.edu.cn/jsxsd/xskb/xskb_list.do" })
+                    } catch (_: Exception) {}
+                }, 2500)
+            }
+        }
     }
 
     private fun destroyBgWebView() {
@@ -334,13 +344,18 @@ class MainActivity : ComponentActivity() {
         const val DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
-        /** 抓取当前页面（含同源 iframe）里最像课表的表格 HTML */
-        const val GRAB_JS = """(function(){function find(doc){var ts=doc.querySelectorAll('table');
+        /** 抓取当前页面（含同源 iframe）里最像课表的表格 HTML。
+         *  find() 必须认准标准课表结构（.kbcontent/.kbcontent1 格子）：
+         *  自动登录后 WebView 可能停在个人中心门户页，那里的预览表也有"星期/周期"字样，
+         *  但没有 title 标注齐全的课程格——抓它会把老师全抓丢（2026-10-31 用户报的"没老师"根因）。 */
+        const val GRAB_JS = """(function(){function find(doc){try{
+if(!doc.querySelector('.kbcontent,.kbcontent1'))return false;}catch(e){return false;}
+var ts=doc.querySelectorAll('table');
 for(var i=0;i<ts.length;i++){var tx=ts[i].textContent||'';
 if(/周\s*期|星期|Week/.test(tx)&&ts[i].querySelectorAll('td').length>15)return true;}return false;}
 function walk(win,d){try{if(d>4)return null;if(find(win.document))return win.document.documentElement.outerHTML;
 for(var i=0;i<win.frames.length;i++){var r=walk(win.frames[i],d+1);if(r)return r;}}catch(e){}return null;}
-var h=walk(window,0)||document.documentElement.outerHTML;AndroidGrab.receive(h);})();"""
+var h=walk(window,0);if(h)AndroidGrab.receive(h);})();"""
     }
 }
 

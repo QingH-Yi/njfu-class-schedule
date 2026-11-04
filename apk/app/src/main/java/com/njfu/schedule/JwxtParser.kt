@@ -16,6 +16,13 @@ object JwxtParser {
         "四" to (7 to 8), "五" to (9 to 10), "六" to (11 to 12)
     )
 
+    // 热点正则预编译（解析一页要跑几百次，别在函数里反复 Regex(...)）
+    private val RE_PERIOD_SMALL = Regex("([0-9][0-9\\-~,，\\s]*)\\s*小\\s*节")
+    private val RE_PERIOD_RANGE = Regex("(\\d{1,2}(?:\\s*[-~—–]\\s*\\d{1,2}){1,3})\\s*[大小]?节")
+    private val RE_NUM_RANGE = Regex("(\\d+)\\s*[-~—–]\\s*(\\d+)|(\\d+)")
+    private val RE_ROW_RANGE = Regex("(\\d+)\\s*[-~—–]\\s*(\\d+)")
+    private val RE_DAJIE = Regex("第\\s*([一二三四五六])\\s*大节")
+
     fun parseHtml(html: String): ParseResult? {
         val doc = Jsoup.parse(html)
         return parseCourseTable(doc)

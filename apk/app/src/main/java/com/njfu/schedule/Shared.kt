@@ -56,13 +56,17 @@ fun weekLabel(weeks: List<Int>): String = formatWeeks(weeks, suffix = "周", emp
 /** 编辑框用："1-16,18"；空="" */
 fun weeksToText(weeks: List<Int>): String = formatWeeks(weeks)
 
+/** 周次文本里的数字/区间（预编译，解析器和 CSV 导入共用热点） */
+private val WEEK_RANGE_RE = Regex("(\\d+)\\s*[-~—–]\\s*(\\d+)|(\\d+)")
+
 /**
  * 周次文本解析（唯一入口，编辑弹窗与教务解析器共用）：
- * "1-16,18" / "3-8,10-13" / "单周" "双周" 修饰都支持；1..53 之外的数字丢弃。
+ * "1-16,18" / "3-8,10-13" / "单周" "双周" 修饰都支持；中文顿号"、"分隔与 "x-x单/x-x双"
+ * （WakeUp CSV 格式）同样兼容；1..53 之外的数字丢弃。
  */
 fun parseWeekNumbers(text: String, oddOnly: Boolean = false, evenOnly: Boolean = false): List<Int> {
     val out = sortedSetOf<Int>()
-    for (m in Regex("(\\d+)\\s*[-~—–]\\s*(\\d+)|(\\d+)").findAll(text)) {
+    for (m in WEEK_RANGE_RE.findAll(text)) {
         val g = m.groupValues
         if (g[1].isNotEmpty()) {
             var a = g[1].toIntOrNull() ?: continue

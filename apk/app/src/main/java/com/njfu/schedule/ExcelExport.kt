@@ -144,7 +144,7 @@ object ExcelExport {
     private fun sheetXml(content: List<List<String>>, widths: List<Double>): String {
         val sb = StringBuilder()
         sb.append("""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cols>""")
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>""")
         widths.forEachIndexed { i, w ->
             sb.append("""<col min="${i + 1}" max="${i + 1}" width="$w" customWidth="1"/>""")
         }

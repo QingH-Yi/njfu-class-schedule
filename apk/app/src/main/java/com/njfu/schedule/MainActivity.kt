@@ -14,6 +14,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
+import androidx.activity.compose.ManagedActivityResultLauncher
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -77,6 +78,7 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -830,22 +832,26 @@ fun CourseCellText(
     BoxWithConstraints(Modifier.padding(4.dp)) {
         val maxWpx = (maxWidth.value * density).toInt().coerceAtLeast(1)
         val availH = maxHeight.value
-        // 从大字号往小试，选第一个能塞下"课名 + 教室 + 老师"的字号
-        val nameSizes = listOf(11f, 10.5f, 10f, 9.5f, 9f, 8.5f, 8f, 7.5f)
-        var chosenName = 7.5f
-        var chosenSub = 6.5f
-        for (ns in nameSizes) {
-            val ss = (ns - 1.5f).coerceAtLeast(6.5f)
-            fun h(text: String, sz: Float, bold: Boolean): Int = if (text.isEmpty()) 0 else measurer.measure(
-                AnnotatedString(text),
-                style = TextStyle(
-                    fontSize = sz.sp, lineHeight = (sz + 1.5f).sp,
-                    fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal
-                ),
-                constraints = androidx.compose.ui.unit.Constraints(maxWidth = maxWpx)
-            ).size.height
-            val totalDp = (h(name, ns, true) + h(location, ss, false) + h(teacher, ss, false)) / density
-            if (totalDp <= availH) { chosenName = ns; chosenSub = ss; break }
+        // 字号选择结果按 (内容, 格子尺寸) 缓存：滑动/翻周重组时不再对每个格子重新测量（性能）
+        val (chosenName, chosenSub) = remember(name, location, teacher, maxWpx, availH) {
+            // 从大字号往小试，选第一个能塞下"课名 + 教室 + 老师"的字号
+            val nameSizes = listOf(11f, 10.5f, 10f, 9.5f, 9f, 8.5f, 8f, 7.5f)
+            var cn = 7.5f
+            var cs = 6.5f
+            for (ns in nameSizes) {
+                val ss = (ns - 1.5f).coerceAtLeast(6.5f)
+                fun h(text: String, sz: Float, bold: Boolean): Int = if (text.isEmpty()) 0 else measurer.measure(
+                    AnnotatedString(text),
+                    style = TextStyle(
+                        fontSize = sz.sp, lineHeight = (sz + 1.5f).sp,
+                        fontWeight = if (bold) FontWeight.SemiBold else FontWeight.Normal
+                    ),
+                    constraints = androidx.compose.ui.unit.Constraints(maxWidth = maxWpx)
+                ).size.height
+                val totalDp = (h(name, ns, true) + h(location, ss, false) + h(teacher, ss, false)) / density
+                if (totalDp <= availH) { cn = ns; cs = ss; break }
+            }
+            cn to cs
         }
         Column {
             Text(
@@ -1855,6 +1861,51 @@ fun SettingsDialog(
         }
     }
 
+    // 导出 WakeUp CSV：国内课表 App 生态标准交换格式，可导入 WakeUp 课表等 App
+    val csvExportLauncher = textExportLauncher(exportScope, context, "text/csv") {
+        WakeCsv.buildCsv(Repository.loadSchedule())
+    }
+    val icsExportLauncher = textExportLauncher(exportScope, context, "text/calendar") {
+        val s = Repository.loadSchedule()
+        IcsExport.buildIcs(s, s.campus)
+    }
+
+    // 导入 WakeUp CSV：从其它课表 App 迁移（同名同位置去重合并，手动加的课重抓时保留）
+    val csvImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            exportScope.launch {
+                val text = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openInputStream(uri)?.use {
+                            it.readBytes().toString(Charsets.UTF_8)
+                        }
+                    }.getOrNull()
+                }
+                if (text.isNullOrEmpty()) {
+                    Toast.makeText(context, "读取文件失败", Toast.LENGTH_LONG).show()
+                    return@launch
+                }
+                val (courses, skipped) = WakeCsv.parseCsv(text)
+                if (courses.isEmpty()) {
+                    Toast.makeText(
+                        context,
+                        "没解析到课程：请用 WakeUp 模板格式（课程名称,星期,开始节数,结束节数,老师,地点,周数）",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    return@launch
+                }
+                val added = withContext(Dispatchers.IO) { Repository.addCourses(courses, "") }
+                Toast.makeText(
+                    context,
+                    "导入 $added 门新课（重复位置跳过），无效行 $skipped",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
     MacDialog(color = th.surface, onDismissRequest = onDone) { close ->
         Column {
             // 内层滚动列只放表单内容，取消/保存按钮固定在卡片底部
@@ -2073,6 +2124,33 @@ fun SettingsDialog(
                             exportLauncher.launch(ExcelExport.suggestedFileName(Repository.loadSchedule()))
                         }
                     ) { SettingsChevron(th) }
+                    SettingsDivider(th)
+                    SettingsRow(
+                        th, "📋", SETTING_TINTS[1], "导出 WakeUp CSV",
+                        subtitle = "课表 App 通用交换格式，可导入 WakeUp 课表等 App（一门课一行；没有的老师/教室写「无」；整周实习不导出）",
+                        onClick = {
+                            val s = Repository.loadSchedule()
+                            csvExportLauncher.launch("南林课程表-${s.term.ifBlank { "未命名学期" }}.csv")
+                        }
+                    ) { SettingsChevron(th) }
+                    SettingsDivider(th)
+                    SettingsRow(
+                        th, "📆", SETTING_TINTS[2], "导出日历 ICS",
+                        subtitle = "按周次和三校区作息展开成日历事件，导入系统日历后自动按周显示上课时间（整周实习无具体时刻，不含）",
+                        onClick = {
+                            icsExportLauncher.launch(IcsExport.suggestedFileName(Repository.loadSchedule()))
+                        }
+                    ) { SettingsChevron(th) }
+                    SettingsDivider(th)
+                    SettingsRow(
+                        th, "📥", SETTING_TINTS[0], "导入 WakeUp CSV",
+                        subtitle = "从其它课表 App 迁移：一门课一行的标准格式；与现有课表同位置去重合并，手动加的课重抓时保留",
+                        onClick = {
+                            csvImportLauncher.launch(
+                                arrayOf("text/csv", "text/comma-separated-values", "text/plain")
+                            )
+                        }
+                    ) { SettingsChevron(th) }
                 }
 
                 SectionTitle("关于", th.accent, "ℹ️")
@@ -2147,8 +2225,35 @@ fun SettingsDialog(
     }
 }
 
-/** 详情弹窗的信息行：图标 + 标签 + 值 */
+
+/**
+ * 文本类导出（WakeUp CSV / 日历 ICS）共用的 CreateDocument 启动器：
+ * 用户选好保存位置后，在 IO 线程生成文本并写 UTF-8 字节，完成后 Toast。
+ */
 @Composable
+private fun textExportLauncher(
+    scope: CoroutineScope,
+    context: android.content.Context,
+    mime: String,
+    build: () -> String
+): ManagedActivityResultLauncher<String, Uri?> =
+    rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(mime)) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val ok = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openOutputStream(uri)?.use {
+                            it.write(build().toByteArray(Charsets.UTF_8))
+                        } ?: return@runCatching false
+                        true
+                    }.getOrDefault(false)
+                }
+                Toast.makeText(context, if (ok) "已导出" else "导出失败，请重试", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+/** 详情弹窗的信息行：图标 + 标签 + 值 */@Composable
 fun InfoRow(icon: String, label: String, value: String, th: AppColors) {
     if (value.isEmpty()) return
     Row(

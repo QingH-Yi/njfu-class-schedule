@@ -30,12 +30,12 @@ class ParserRealDataTest {
         assertEquals("3", credits["电力系统暂态分析"])
         assertEquals("1", credits["工程经济管理概论[社会认知类]（分组01）"])
 
-        // 三轮一致合并：只有三轮都一致的键才保留
+        // 多轮合并 = 查缺补漏：某轮漏掉的课名由其它轮补上（不再是"三轮一致才保留"）
         val r1 = credits
         val r2 = credits - "体育(5)（舞龙）"
         val r3 = credits
         val merged = Repository.mergeCreditsRounds(listOf(r1, r2, r3))
-        assertTrue("不一致的键应被剔除", "体育(5)（舞龙）" !in merged)
+        assertTrue("漏掉的课名要由其它轮补上", "体育(5)（舞龙）" in merged)
         assertEquals("2", merged["电气控制与PLC"])
     }
 

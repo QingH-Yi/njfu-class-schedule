@@ -200,4 +200,30 @@ class CourseMergeTest {
         assertTrue(u.contains(3 to 3)); assertTrue(u.contains(3 to 4))
         assertTrue(u.contains(5 to 5)); assertTrue(u.contains(5 to 6))
     }
+
+    @Test
+    fun unionRoundResultsMergesMissingCoursesAcrossRounds() {
+        // 第 1 轮漏了周三那节、第 2 轮全抓到：合并后不能缺课（查缺补漏，不是重复劳动）
+        val r1 = ParseResult("2026-2027-1", listOf(
+            Course("a", "高数", "张三", "101", 1, 1, 2, (1..16).toList())))
+        val r2 = ParseResult("", listOf(
+            Course("a", "高数", "张三", "101", 1, 1, 2, (1..16).toList()),
+            Course("b", "英语", "李四", "202", 3, 3, 4, (1..16).toList())))
+        val merged = unionRoundResults(listOf(r1, r2))
+        assertEquals(2, merged.courses.size)
+        assertEquals("2026-2027-1", merged.term)   // term 取第一个非空
+        // 完全相同的条目只留一条
+        assertEquals(1, merged.courses.count { it.name == "高数" })
+    }
+
+    @Test
+    fun mergeCreditRoundsFillsGapsAndVotesMajority() {
+        val r1 = mapOf("高数" to "4.0", "体育" to "1.0")
+        val r2 = mapOf("高数" to "4.0")                       // 漏了体育 → 由 r1/r3 补上
+        val r3 = mapOf("高数" to "5.0", "体育" to "1.0")       // 高数值冲突 → 4.0 出现两次胜出
+        val m = mergeCreditRounds(listOf(r1, r2, r3))
+        assertEquals("4.0", m["高数"])
+        assertEquals("1.0", m["体育"])
+        assertTrue("没有的课名不能编造", "物理" !in m)
+    }
 }

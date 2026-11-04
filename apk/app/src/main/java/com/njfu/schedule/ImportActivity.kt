@@ -152,11 +152,11 @@ class ImportActivity : ComponentActivity() {
         }
     }
 
-    /** 课表入库（keepEdited=是否保留手动修改与删除），随后抓三轮学分 */
+    /** 课表入库（keepEdited=是否保留手动修改与删除），随后爬学分 */
     private fun applyAndFetchCredits(res: ParseResult, keepEdited: Boolean) {
         Repository.replaceCourses(res.courses, res.term, keepEdited = keepEdited)
         grabbingCredits = true
-        status.text = "课表校验一致：已导入 $lastAdded 门，正在爬学分（第1/3轮）…"
+        status.text = "已导入 $lastAdded 门课，正在爬学分…"
         val js = loadKbJs(res.term.ifEmpty { Repository.loadSchedule().term })
         for (d in longArrayOf(500, 3000, 5500)) {
             webView.postDelayed({
@@ -169,19 +169,8 @@ class ImportActivity : ComponentActivity() {
         val u = Repository.user
         val p = Repository.pass
         if (u.isEmpty() || p.isEmpty() || !Repository.savedPass) return
-        // 统一认证手机版模板会常驻渲染验证码输入框（未必真的要求填写），
-        // 所以不因它存在而跳过；若真需要验证码，提交失败无害，用户手动接管即可。
-        val js = "(function(){try{" +
-                "var u=document.querySelector('input[name=username],input#username,input[name=user],input[name=yh],input[name=zh]');" +
-                "var pw=document.querySelector('input[type=password]');" +
-                "if(!u||!pw){return 'nofield';}" +
-                "if(u.value&&pw.value){return 'filled';}" +
-                "u.value='" + jsStr(u) + "';pw.value='" + jsStr(p) + "';" +
-                "var b=document.querySelector('button[type=submit],input[type=submit],#loginBtn,.loginBtn');" +
-                "if(b){b.click();return 'submitted';}return 'nofield';" +
-                "}catch(e){return 'err';}})();"
-        webView.evaluateJavascript(js) { r ->
-            if (r.trim('"') == "submitted") {
+        webView.evaluateJavascript(autoLoginJs(u, p)) { r ->
+            if (r.contains("submitted")) {
                 status.text = "已自动填写账号并尝试登录。若页面有验证码或登录失败，请手动完成登录后点右上角抓取。"
                 // 登录提交后主动跳课表页：CAS 默认落点可能是个人中心门户（那里抓不到标准课表格）
                 webView.postDelayed({
@@ -192,14 +181,13 @@ class ImportActivity : ComponentActivity() {
     }
 
     private fun doGrab() {
-        status.text = "正在抓取课表（第1/3轮）…"
-        tableRounds.clear()
-        tableResults.clear()
-        creditRounds.clear()
+        status.text = "正在抓取课表…"
+        tableRounds.reset()
+        creditRounds.reset()
         grabbingCredits = false
         importFinished = false
         lastAdded = 0
-        // 所有内容都抓三轮：课表抓 3 轮，签名一致才入库；随后学分再抓 3 轮
+        // 抓 3 轮：每轮对同一页面重新爬取（查缺补漏，某轮漏的课由其它轮补上），最后合并去重入库
         for (d in longArrayOf(0, 1500, 3000)) {
             webView.postDelayed({
                 try { webView.evaluateJavascript(MainActivity.GRAB_JS, null) } catch (_: Exception) {}
@@ -224,9 +212,9 @@ class ImportActivity : ComponentActivity() {
         webView.postDelayed({ finish() }, 1500)
     }
 
-    private val tableRounds = ArrayList<String>()
-    private val tableResults = ArrayList<ParseResult>()
-    private val creditRounds = ArrayList<Map<String, String>>()
+    // 每轮收 (签名, 解析结果)：签名三轮一致才采纳；学分每轮收 课名→学分 映射
+    private val tableRounds = RoundCollector<Pair<String, ParseResult>>()
+    private val creditRounds = RoundCollector<Map<String, String>>()
     private var grabbingCredits = false
     private var importFinished = false
     private var lastAdded = 0
@@ -248,23 +236,15 @@ class ImportActivity : ComponentActivity() {
                     Toast.makeText(this@ImportActivity, "未识别到课表", Toast.LENGTH_SHORT).show()
                     return@runOnUiThread
                 }
-                tableResults.add(result)
-                tableRounds.add(tableSignature(result))
+                val done = tableRounds.offer(tableSignature(result) to result)
                 when {
-                    tableRounds.size < 3 -> {
-                        status.text = "正在抓取课表（第${tableRounds.size + 1}/3轮）…"
-                    }
-                    tableRounds.toSet().size != 1 -> {
-                        // 三轮不一致：宁可不导，防止爬错
-                        importFinished = true
-                        status.text = "三轮抓取结果不一致，为防爬错本次未导入，请重试。"
-                        Toast.makeText(this@ImportActivity, "三轮结果不一致，请重试", Toast.LENGTH_LONG).show()
-                        webView.postDelayed({ finish() }, 1800)
+                    !done -> {
+                        status.text = "正在抓取课表…"
                     }
                     else -> {
-                        // 三轮一致：若用户手动改过课表 / 整学期删过课，先问怎么处理再入库
-                        lastAdded = tableResults[0].courses.size
-                        val res = tableResults[0]
+                        // 三轮各查缺补漏后合并（一轮没抓全的课由其它轮补上），再走导入确认
+                        val res = unionRoundResults(tableRounds.all.map { it.second })
+                        lastAdded = res.courses.size
                         val edited = Repository.editedCourses().isNotEmpty()
                         val deletedNames = Repository.tombstonedCoursesIn(res.courses)
                         when {
@@ -303,21 +283,15 @@ class ImportActivity : ComponentActivity() {
             } catch (e: Exception) {
                 emptyMap<String, String>()
             }
-            var done = false
-            synchronized(creditRounds) {
-                if (creditRounds.size < 3) {
-                    creditRounds.add(map)
-                    done = creditRounds.size == 3
-                }
-            }
+            val done = creditRounds.offer(map)
             runOnUiThread {
                 if (isFinishing) return@runOnUiThread
                 if (done) {
-                    // 三轮完全一致的课名才采纳
-                    val merged = Repository.mergeCreditsRounds(creditRounds.toList())
+                    // 多轮查缺补漏合并后写入
+                    val merged = Repository.mergeCreditsRounds(creditRounds.all)
                     finishImport(Repository.applyCredits(merged))
                 } else {
-                    status.text = "正在爬学分（第${creditRounds.size + 1}/3轮）…"
+                    status.text = "正在爬学分…"
                 }
             }
         }

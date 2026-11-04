@@ -445,14 +445,9 @@ object Repository {
         sp.edit().putStringSet(K_DELETED, emptySet()).apply()
     }
 
-    fun mergeCreditsRounds(rounds: List<Map<String, String>>): Map<String, String> {
-        if (rounds.size != 3) return emptyMap()
-        val first = rounds[0]
-        if (first.isEmpty()) return emptyMap()
-        return first.filter { (k, v) ->
-            v.isNotEmpty() && rounds.all { it[k] == v }
-        }
-    }
+    /** 多轮学分合并（每轮查缺补漏）：见 CourseMerge.mergeCreditRounds。保留旧名字作为入口 */
+    fun mergeCreditsRounds(rounds: List<Map<String, String>>): Map<String, String> =
+        mergeCreditRounds(rounds)
 
     /** 把爬到的学分按课名写入课表，返回写入条数。
      *  课名匹配：先精确（去空格），再把 loadkb 课名尾部的分组括号逐层剥掉兜底

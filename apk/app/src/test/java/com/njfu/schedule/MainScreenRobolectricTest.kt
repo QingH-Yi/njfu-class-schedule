@@ -2,7 +2,9 @@ package com.njfu.schedule
 
 import android.content.Context
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.*
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -406,19 +408,65 @@ class MainScreenRobolectricTest {
         assertTrue("拆剩的课要标 edited（防重抓覆盖回完整周次）", c.edited)
     }
 
-    /** 详情弹窗规格：节次/教室/老师/周次/学分五行固定显示，没数据的行显 "—" 而不是整行消失 */
+    /** 详情弹窗规格：节次/教室/老师/周次/学分固定显示；没数据的显 "——" 占位、学分可自己填 */
     @Test
     @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
     fun detailDialogAlwaysShowsAllFieldRows() {
         seed()   // 种子里没有学分数据 → 学分行以前会整行消失
         rule.setContent { ScheduleApp(mutableStateOf(0)) }
         rule.waitForIdle()
-        openDetail("信号与系统分析")
+        // 专业实习：教室为空 → 详情里要显示 "——" 占位而不是空着/整行消失
+        openDetail("专业实习")
         assertTrue("教室行要显示", hasText("教室"))
         assertTrue("老师行要显示", hasText("老师"))
         assertTrue("周次行要显示", hasText("周次"))
-        assertTrue("学分行要显示（空值显 —）", hasText("学分"))
-        assertTrue("空值要显占位符", hasText("—"))
+        assertTrue("学分行要显示（可编辑输入框）", hasText("学分"))
+        assertTrue("空值要显占位符 ——", hasText("——"))
+        rule.onNodeWithTag("creditField").assertExists()
+    }
+
+    /** 详情弹窗的学分 + 备忘录都可编辑：保存后写回表格数据（单一数据源），界面从表格取回 */
+    @Test
+    @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
+    fun detailCreditAndNoteEditableAndSaved() {
+        seed()
+        rule.setContent { ScheduleApp(mutableStateOf(0)) }
+        rule.waitForIdle()
+        openDetail("信号与系统分析")
+        rule.onNodeWithTag("creditField").performTextInput("3.5")
+        rule.onNodeWithTag("detailNoteField").performTextInput("第10周交报告")
+        rule.onNodeWithText("保存").performClick()
+        rule.waitForIdle()
+        val c = Repository.loadSchedule().courses.first { it.id == "c2" }
+        assertEquals("学分要写回课表数据", "3.5", c.credit)
+        assertEquals("备忘录要写回课表数据", "第10周交报告", c.note)
+    }
+
+    /** 清空时段 = 整门课删除（用户明确要求的第二条删除路径） */
+    @Test
+    @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
+    fun editDialogClearingAllSlotsDeletesCourse() {
+        seed()
+        rule.setContent { ScheduleApp(mutableStateOf(0)) }
+        rule.waitForIdle()
+        openDetail("信号与系统分析")
+        rule.onAllNodesWithText("编辑")[0].performClick()
+        rule.waitForIdle()
+        // 时段网格：格子是 pointerInput 画的（无独立语义节点），注入真实触摸坐标点选。
+        // 课程在周三第 3、4 节（格子 32dp×20dp），逐个取消选择 → 清空
+        fun toggle(d: Int, p: Int) = rule.onNodeWithTag("periodGrid").performTouchInput {
+            click(Offset(left + (d - 0.5f) * 32.dp.toPx(), top + (p - 0.5f) * 20.dp.toPx()))
+        }
+        toggle(3, 3)
+        rule.waitForIdle()
+        toggle(3, 4)
+        rule.waitForIdle()
+        rule.onNodeWithTag("editSaveButton").performClick()
+        rule.waitForIdle()
+        assertFalse(
+            "时段清空后整门课要被删除",
+            Repository.loadSchedule().courses.any { it.id == "c2" }
+        )
     }
 
     /** 编辑弹窗取消"同步修改"后，时段必须还原成这一节自己的（带着并集保存会炸出重复课） */

@@ -442,24 +442,8 @@ object JwxtParser {
         l.any { it.isDigit() } && l.contains("周") &&
                 !Regex("上课|地点|老师|教师").containsMatchIn(l)
 
-    private fun parseWeeks(text: String): List<Int> {
-        if (text.isEmpty()) return emptyList()
-        val single = text.contains("单周"); val double = text.contains("双周")
-        val out = sortedSetOf<Int>()
-        val re = Regex("(\\d+)\\s*[-~—–]\\s*(\\d+)|(\\d+)")
-        for (m in re.findAll(text)) {
-            val g = m.groupValues
-            if (g[1].isNotEmpty()) {
-                var a = g[1].toInt(); var b = g[2].toInt()
-                if (a > b) { val t = a; a = b; b = t }
-                for (i in a..b) out.add(i)
-            } else out.add(g[3].toInt())
-        }
-        var list = out.toList()
-        if (single) list = list.filter { it % 2 == 1 }
-        if (double) list = list.filter { it % 2 == 0 }
-        return list
-    }
+    private fun parseWeeks(text: String): List<Int> =
+        parseWeekNumbers(text, text.contains("单周"), text.contains("双周"))
 
     private fun parseRowPeriod(text: String): Pair<Int, Int>? {
         val m = Regex("第\\s*([一二三四五六])\\s*大节").find(text)

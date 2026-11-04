@@ -57,6 +57,41 @@ fun unionSlots(courses: List<Course>): Set<Pair<Int, Int>> =
 fun courseKeyOf(c: Course): String = "${c.name}|${c.day}|${c.startPeriod}"
 
 /**
+ * 多轮抓取结果合并（查缺补漏，不是重复劳动）：每一轮都是对同一页面的重新爬取，
+ * 某轮漏掉/解析失败的课由其它轮补上。合并规则：
+ *  ① 全键（名称|星期|起止节|老师|教室|类型|周次）完全相同的条目只留一条；
+ *  ② 同位置但周次为子集的条目由 unionSameSlotCourses 并集归一。
+ * term 取第一个非空的。
+ */
+fun unionRoundResults(results: List<ParseResult>): ParseResult {
+    if (results.size == 1) return results[0]
+    val term = results.firstOrNull { it.term.isNotEmpty() }?.term ?: ""
+    val deduped = results.flatMap { it.courses }.distinctBy {
+        "${it.name}|${it.day}|${it.startPeriod}|${it.endPeriod}|" +
+                "${it.teacher}|${it.location}|${it.kind}|${it.weeks}"
+    }
+    return ParseResult(term, unionSameSlotCourses(deduped))
+}
+
+/**
+ * 多轮爬到的学分合并（每轮查缺补漏）：某轮漏掉的课名由其它轮补上；
+ * 同一课名多轮值冲突时取出现次数最多的（并列取先爬到的，不编造）。
+ */
+fun mergeCreditRounds(rounds: List<Map<String, String>>): Map<String, String> {
+    if (rounds.isEmpty()) return emptyMap()
+    val counts = HashMap<String, MutableMap<String, Int>>()
+    for (r in rounds) for ((k, v) in r) {
+        if (v.isEmpty()) continue
+        counts.getOrPut(k) { LinkedHashMap() }.merge(v, 1) { a, b -> a + b }
+    }
+    val out = LinkedHashMap<String, String>()
+    for ((k, m) in counts) {
+        out[k] = m.entries.maxByOrNull { it.value }?.key ?: continue
+    }
+    return out
+}
+
+/**
  * 数据修复：同一位置（名称/星期/起止节/老师/教室/类型 全同）出现多条课时，合并成一条、周次取并集。
  *
  * 背景："仅本周"编辑/删除会在同位置拆出多条不同周次的课；旧版本 bug 或异常数据也可能产生

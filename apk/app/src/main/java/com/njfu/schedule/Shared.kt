@@ -55,3 +55,97 @@ fun weekLabel(weeks: List<Int>): String = formatWeeks(weeks, suffix = "周", emp
 
 /** 编辑框用："1-16,18"；空="" */
 fun weeksToText(weeks: List<Int>): String = formatWeeks(weeks)
+
+/**
+ * 周次文本解析（唯一入口，编辑弹窗与教务解析器共用）：
+ * "1-16,18" / "3-8,10-13" / "单周" "双周" 修饰都支持；1..53 之外的数字丢弃。
+ */
+fun parseWeekNumbers(text: String, oddOnly: Boolean = false, evenOnly: Boolean = false): List<Int> {
+    val out = sortedSetOf<Int>()
+    for (m in Regex("(\\d+)\\s*[-~—–]\\s*(\\d+)|(\\d+)").findAll(text)) {
+        val g = m.groupValues
+        if (g[1].isNotEmpty()) {
+            var a = g[1].toIntOrNull() ?: continue
+            var b = g[2].toIntOrNull() ?: continue
+            if (a > b) { val t = a; a = b; b = t }
+            for (i in a..b) if (i in 1..53) out.add(i)
+        } else {
+            g[3].toIntOrNull()?.let { if (it in 1..53) out.add(it) }
+        }
+    }
+    var list = out.toList()
+    if (oddOnly) list = list.filter { it % 2 == 1 }
+    if (evenOnly) list = list.filter { it % 2 == 0 }
+    return list
+}
+
+/**
+ * 统一身份认证（CAS）自动登录填表 JS：MainActivity 后台更新与 ImportActivity 抓取共用。
+ * 在登录输入框为空时才填写（避免覆盖用户正在输入的内容），找到提交按钮就点并返回 'submitted'。
+ * 统一认证手机版模板会常驻渲染验证码输入框（未必真的要求填写），所以不因它存在而跳过；
+ * 若真需要验证码，提交失败无害，用户手动接管。
+ */
+fun autoLoginJs(user: String, pass: String): String =
+    "(function(){try{" +
+            "var u=document.querySelector('input[name=username],input#username,input[name=user],input[name=yh],input[name=zh]');" +
+            "var pw=document.querySelector('input[type=password]');" +
+            "if(!u||!pw)return 'nofield';" +
+            "if(u.value&&pw.value)return 'filled';" +
+            "u.value='${jsStr(user)}';pw.value='${jsStr(pass)}';" +
+            "var b=document.querySelector('button[type=submit],input[type=submit],#loginBtn,.loginBtn');" +
+            "if(b){b.click();return 'submitted';}return 'nofield';" +
+            "}catch(e){return 'err';}})();"
+
+/**
+ * 三轮抓取收集器：课表/学分抓 3 轮、一致才采纳（防抓错/抓一半）。
+ * 收满 count 轮时 offer 返回 true；线程安全（回调跑在 WebView 的 JavaBridge 后台线程）。
+ */
+class RoundCollector<T>(private val count: Int = 3) {
+    private val items = ArrayList<T>(count)
+    @Synchronized fun offer(item: T): Boolean {
+        if (items.size >= count) return false
+        items.add(item)
+        return items.size == count
+    }
+    @Synchronized fun reset() = items.clear()
+    @get:Synchronized val all: List<T> get() = items.toList()
+    @get:Synchronized val size: Int get() = items.size
+}
+
+/**
+ * 学分抓取脚本：在已登录的教务页面里先取「个人中心」门户页的节次模式 GUID，
+ * 再 fetch 个人中心课表（mainV_index_loadkb.htmlx，悬停课程卡片显示的浮层
+ * 就是其中 div.item-box，内含「学分：X」），把整页 HTML 回传 AndroidGrab.receiveKb。
+ * 手动导入（ImportActivity）与后台自动更新（MainActivity）共用。
+ */
+fun loadKbJs(term: String): String {
+    val t = term.replace("\\", "\\\\").replace("'", "\\'")
+    return """(function(){
+function done(h){try{AndroidGrab.receiveKb(h||'')}catch(e){}}
+function guid(cb){
+ var x=new XMLHttpRequest();
+ x.open('GET','/jsxsd/framework/xsMainV_new.htmlx?t1=1',true);
+ x.timeout=8000;
+ x.onload=function(){
+  var t=x.responseText||'';
+  var m=t.match(/class="layui-this"[^>]*data-value="([0-9A-Fa-f]{32})"/)||
+        t.match(/data-value="([0-9A-Fa-f]{32})"[^>]*class="layui-this"/)||
+        t.match(/data-value="([0-9A-Fa-f]{32})"/);
+  cb(m?m[1]:'');
+ };
+ x.onerror=function(){cb('')};x.ontimeout=function(){cb('')};
+ x.send();
+}
+guid(function(g){
+ if(!g){done('');return;}
+ var x=new XMLHttpRequest();
+ var term='$t';
+ var q='rq=all&sjmsValue='+g+(term?('&xnxqid='+encodeURIComponent(term)):'')+'&xswk=false';
+ x.open('GET','/jsxsd/framework/mainV_index_loadkb.htmlx?'+q,true);
+ x.timeout=10000;
+ x.onload=function(){done(x.responseText||'')};
+ x.onerror=function(){done('')};x.ontimeout=function(){done('')};
+ x.send();
+});
+})();"""
+}

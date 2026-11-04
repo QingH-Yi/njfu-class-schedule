@@ -28,9 +28,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.collectIsDraggedAsState
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.layout.*import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.PagerSnapDistance
 import androidx.compose.foundation.pager.rememberPagerState
@@ -51,7 +49,6 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -168,23 +165,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 在当前页面尝试一次自动登录：只在登录输入框为空时填写，避免覆盖用户正在输入的内容。
+    /** 在当前页面尝试一次自动登录：只在登录输入框为空时填写（见 autoLoginJs）。
      *  提交成功后主动跳到课表页：CAS 登录后的默认落点可能是个人中心门户，
      *  停在那里会被抓取脚本抓到门户预览表（结构不同，老师会抓丢）。 */
     private fun autoLoginOnce(wv: WebView) {
         val u = Repository.user
         val p = Repository.pass
         if (u.isEmpty() || p.isEmpty()) return
-        val js = "(function(){try{" +
-                "var u=document.querySelector('input[name=username],input#username,input[name=user],input[name=yh]');" +
-                "var pw=document.querySelector('input[type=password]');" +
-                "if(!u||!pw)return 'nofield';" +
-                "if(u.value&&pw.value)return 'filled';" +
-                "u.value='${jsStr(u)}';pw.value='${jsStr(p)}';" +
-                "var b=document.querySelector('button[type=submit],input[type=submit],#loginBtn,.loginBtn');" +
-                "if(b){b.click();return 'submitted';}return 'nofield';" +
-                "}catch(e){return 'err';}})();"
-        wv.evaluateJavascript(js) { r ->
+        wv.evaluateJavascript(autoLoginJs(u, p)) { r ->
             if (r.contains("submitted")) {
                 wv.postDelayed({
                     try {
@@ -212,29 +200,19 @@ class MainActivity : ComponentActivity() {
     }
 
     inner class BgGrab {
-        private val tableRounds = ArrayList<String>()
-        private val tableResults = ArrayList<ParseResult>()
-        private val creditRounds = ArrayList<Map<String, String>>()
+        // 每轮收 (签名, 解析结果)：签名三轮一致才采纳 results[0]
+        private val tableRounds = RoundCollector<Pair<String, ParseResult>>()
+        private val creditRounds = RoundCollector<Map<String, String>>()
         private var roundsStarted = false
 
         @JavascriptInterface
         fun receive(html: String) {
             val result = JwxtParser.parseHtml(html) ?: return
             if (result.courses.isEmpty()) return
-            var done = false
-            synchronized(tableRounds) {
-                if (tableRounds.size >= 3 || creditRounds.isNotEmpty()) return
-                tableRounds.add(tableSignature(result))
-                tableResults.add(result)
-                done = tableRounds.size == 3
-            }
+            val done = tableRounds.offer(tableSignature(result) to result)
             if (!done) return
-            // 课表三轮完全一致才入库（防抓错/抓一半）；不一致保持旧课表不动
-            if (tableRounds.toSet().size != 1) {
-                runOnUiThread { destroyBgWebView() }
-                return
-            }
-            val r = tableResults[0]
+            // 三轮各查缺补漏后合并入库（一轮没抓全的课由其它轮补上）
+            val r = unionRoundResults(tableRounds.all.map { it.second })
             // 用户手动改过课表：保留修改，别被教务覆盖
             Repository.replaceCourses(r.courses, r.term, keepEdited = Repository.editedCourses().isNotEmpty())
             runOnUiThread {
@@ -252,21 +230,13 @@ class MainActivity : ComponentActivity() {
             } catch (e: Exception) {
                 emptyMap<String, String>()
             }
-            var done = false
-            synchronized(creditRounds) {
-                if (creditRounds.size < 3) {
-                    creditRounds.add(map)
-                    done = creditRounds.size == 3
-                }
-            }
-            if (done) {
-                // 三轮完全一致的课名才采纳，防止爬错
-                val merged = Repository.mergeCreditsRounds(creditRounds.toList())
-                Repository.applyCredits(merged)
-                runOnUiThread {
-                    refreshSignal.value++
-                    destroyBgWebView()
-                }
+            if (!creditRounds.offer(map)) return
+            // 三轮完全一致的课名才采纳，防止爬错
+            val merged = Repository.mergeCreditsRounds(creditRounds.all)
+            Repository.applyCredits(merged)
+            runOnUiThread {
+                refreshSignal.value++
+                destroyBgWebView()
             }
         }
 
@@ -276,7 +246,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** 课表抓到后连抓三轮学分（个人中心课表接口），三轮一致才写库 */
+    /** 课表抓到后连爬学分（个人中心课表接口），多轮查缺补漏合并后写库 */
     private fun startCreditRounds(term: String) {
         val wv = bgWebView ?: return
         val grab = bgGrab ?: return
@@ -566,7 +536,9 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
         val c = schedule.courses.firstOrNull { it.id == c0.id } ?: c0
         val color = th.cardColor(c.name)
         var note by remember(c.id) { mutableStateOf(c.note ?: "") }
-        val noteDirty = note.trim() != (c.note ?: "")
+        var credit by remember(c.id) { mutableStateOf(c.credit ?: "") }
+        // 备忘录/学分任一改动都算"未保存"；保存 = 一起写回表格数据（单一数据源），界面再从表格提取
+        val metaDirty = note.trim() != (c.note ?: "") || credit.trim() != (c.credit ?: "")
         // 同名课在本周的其他上课时间（如周三/周五都上 → 逐行列出）
         val sameName = schedule.courses
             .filter { it.name == c.name && it.day != 0 }
@@ -607,13 +579,34 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                         .heightIn(max = 420.dp)
                         .verticalScroll(rememberScrollState())
                 ) {
+                    // 规格：详情固定显示 节次/教室/老师/周次/学分；没数据显 "——"（不编造，学分可自己填）
                     if (c.day == 0) InfoRow("⏰", "安排", "整周（周一至周五）", th)
                     else PeriodRows(c, sameName, schedule.campus, th)
-                    // 规格：详情固定显示 节次/教室/老师/周次/学分 五行；没数据显 "—"，不整行消失
-                    InfoRow("📍", "教室", c.location.ifEmpty { "—" }, th)
-                    InfoRow("👨‍🏫", "老师", c.teacher.ifEmpty { "—" }, th)
+                    InfoRow("📍", "教室", c.location.ifEmpty { "——" }, th)
+                    InfoRow("👨‍🏫", "老师", c.teacher.ifEmpty { "——" }, th)
                     InfoRow("🔁", "周次", weekLabel(c.weeks), th)
-                    InfoRow("🎓", "学分", c.credit.orEmpty().ifEmpty { "—" }, th)
+                    Spacer(Modifier.height(8.dp))
+                    // 学分：教务爬到的直接带出；没爬到（实习/设计课教务本来就没有）留空让用户自己填
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("🎓", fontSize = 13.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "学分", fontSize = 11.sp, color = th.textSecondary,
+                            modifier = Modifier.width(38.dp)
+                        )
+                        OutlinedTextField(
+                            credit, { credit = it },
+                            placeholder = {
+                                Text(
+                                    "没抓到？自己填，如 3.0",
+                                    fontSize = 12.sp, color = th.textSecondary.copy(alpha = 0.7f)
+                                )
+                            },
+                            singleLine = true,
+                            textStyle = LocalTextStyle.current.copy(fontSize = 13.sp, color = th.textPrimary),
+                            modifier = Modifier.weight(1f).heightIn(min = 52.dp).testTag("creditField")
+                        )
+                    }
                     Spacer(Modifier.height(10.dp))
                     HorizontalDivider(color = th.divider, thickness = 1.dp)
                     Spacer(Modifier.height(10.dp))
@@ -628,7 +621,7 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                             )
                         },
                         textStyle = LocalTextStyle.current.copy(fontSize = 13.sp, color = th.textPrimary),
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 74.dp)
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 74.dp).testTag("detailNoteField")
                     )
                 }
                 Spacer(Modifier.height(10.dp))
@@ -637,19 +630,19 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (noteDirty) {
+                    if (metaDirty) {
                         Text("未保存", fontSize = 11.sp, color = th.textSecondary)
                         Spacer(Modifier.width(8.dp))
                     }
                     TextButton(
-                        enabled = noteDirty,
+                        enabled = metaDirty,
                         onClick = {
-                            // 学分以爬取的为准（只读），保存时原样带回归里
-                            Repository.updateCourseMeta(c, note.trim(), c.credit ?: "")
+                            // 备忘录 + 学分一起写回表格数据（课程所有内容都可由用户自由编辑）
+                            Repository.updateCourseMeta(c, note.trim(), credit.trim())
                             schedule = Repository.loadSchedule()
                             detail = schedule.courses.firstOrNull { it.id == c.id } ?: c0
                         }
-                    ) { Text("保存", color = if (noteDirty) th.accent else th.textSecondary) }
+                    ) { Text("保存", color = if (metaDirty) th.accent else th.textSecondary) }
                     Spacer(Modifier.width(4.dp))
                     TextButton(onClick = { editTarget = c }) {
                         Text("编辑", color = th.accent)
@@ -1071,14 +1064,21 @@ fun TimetableView(
                         }
                     }
                 }
-                // 左列最下方（第 12 格）：与右侧"安排"行对齐的标签。
+                // 左列最下方：与右侧"安排"行对齐的标签（右侧行数多就一起变高，逐行对齐）。
                 // 只在"当前查看的这一周确实有整周安排"时才显示（与右侧一致，没有就不占位）
-                val hasBottom = remember(schedule.courses, viewedWeek) {
-                    schedule.courses.any { it.day == 0 && (it.weeks.isEmpty() || viewedWeek in it.weeks) }
+                val bottomCount = remember(schedule.courses, viewedWeek) {
+                    schedule.courses.count { it.day == 0 && (it.weeks.isEmpty() || viewedWeek in it.weeks) }
                 }
-                if (hasBottom) {
-                    Box(Modifier.height(slotH * 0.78f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Text("安排", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = th.textSecondary)
+                if (bottomCount > 0) {
+                    val bottomRows = (bottomCount + 4) / 5   // 右侧每行最多 5 张卡
+                    Column {
+                        repeat(bottomRows) { r ->
+                            Box(Modifier.height(slotH * 0.78f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                                if (r == 0) {
+                                    Text("安排", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = th.textSecondary)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1204,9 +1204,10 @@ fun TimetableView(
                                 }
                             }
                         }
-                        // 最底部一行：整周安排（实习/实验/课程设计）。
-                        // 只显示"当前查看的这一周"确实要上的（周次命中），没有就整行不显示；
-                        // 内容横跨【周一~周五】这 5 列，与上面网格的列严格对齐（切换周一/周日起点也跟着移）
+                        // 最底部区域：整周安排（实习/实验/课程设计）。
+                        // 只显示"当前查看的这一周"确实要上的（周次命中），没有就整块不显示；
+                        // 内容横跨【周一~周五】这 5 列，与上面网格的列严格对齐（切换周一/周日起点也跟着移）。
+                        // 每行最多放 5 张卡，多出来的换行铺开——教务备注里几门实习/实验就全显示几门，一张不丢
                         val weekBottom = remember(schedule.courses, week) {
                             schedule.courses.filter { it.day == 0 && (it.weeks.isEmpty() || week in it.weeks) }
                         }
@@ -1214,44 +1215,52 @@ fun TimetableView(
                             // 周日为起点时：周日占第 1 列 → 周一到周五整体右移 1 列，周六收尾
                             val leadCols = if (startSunday) 1f else 0f
                             val trailCols = if (startSunday) 1f else 2f
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .height(slotH * 0.78f)
-                                    .padding(vertical = 3.dp)
-                                    .testTag("bottomRow"),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                if (leadCols > 0f) Spacer(Modifier.weight(leadCols))
-                                Row(
-                                    Modifier.weight(5f).fillMaxHeight().testTag("bottomCards"),
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                ) {
-                                    for (b in weekBottom) {
-                                        val color = th.cardColor(b.name)
-                                        Column(
-                                            Modifier
-                                                .weight(1f)
-                                                .fillMaxHeight()
-                                                .clip(RoundedCornerShape(10.dp))
-                                                .background(color.first)
-                                                .clickable { onCourseClick(b) }
-                                                .padding(horizontal = 5.dp, vertical = 3.dp)
+                            Column(Modifier.fillMaxWidth().testTag("bottomRow")) {
+                                for (rowCards in weekBottom.chunked(5)) {
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .height(slotH * 0.78f)
+                                            .padding(vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (leadCols > 0f) Spacer(Modifier.weight(leadCols))
+                                        Row(
+                                            Modifier.weight(5f).fillMaxHeight().testTag("bottomCards"),
+                                            horizontalArrangement = Arrangement.spacedBy(3.dp)
                                         ) {
-                                            Text(
-                                                b.name, fontSize = 9.5.sp, lineHeight = 11.sp,
-                                                fontWeight = FontWeight.SemiBold, color = color.second,
-                                                maxLines = 2, overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                weekLabel(b.weeks), fontSize = 8.sp, lineHeight = 9.sp,
-                                                color = color.second.copy(alpha = 0.7f),
-                                                maxLines = 1, overflow = TextOverflow.Ellipsis
-                                            )
+                                            for (b in rowCards) {
+                                                val color = th.cardColor(b.name)
+                                                Column(
+                                                    Modifier
+                                                        .weight(1f)
+                                                        .fillMaxHeight()
+                                                        .clip(RoundedCornerShape(10.dp))
+                                                        .background(color.first)
+                                                        .clickable { onCourseClick(b) }
+                                                        .padding(horizontal = 5.dp, vertical = 3.dp)
+                                                ) {
+                                                    Text(
+                                                        b.name, fontSize = 9.5.sp, lineHeight = 11.sp,
+                                                        fontWeight = FontWeight.SemiBold, color = color.second,
+                                                        maxLines = 2, overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    // 老师（有则带出）+ 周次
+                                                    val sub = buildList {
+                                                        if (b.teacher.isNotBlank()) add(b.teacher)
+                                                        add(weekLabel(b.weeks))
+                                                    }.joinToString(" · ")
+                                                    Text(
+                                                        sub, fontSize = 8.sp, lineHeight = 9.sp,
+                                                        color = color.second.copy(alpha = 0.7f),
+                                                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                            }
                                         }
+                                        if (trailCols > 0f) Spacer(Modifier.weight(trailCols))
                                     }
                                 }
-                                if (trailCols > 0f) Spacer(Modifier.weight(trailCols))
                             }
                         }
                     }
@@ -1362,23 +1371,6 @@ fun AddCourseDialog(
     }
 }
 
-/** 解析 "1-16,18" 这样的周次文本 → [1..16,18] */
-fun parseWeeksText(text: String): List<Int> {
-    val out = sortedSetOf<Int>()
-    for (m in Regex("(\\d+)\\s*[-~—–]\\s*(\\d+)|(\\d+)").findAll(text)) {
-        val g = m.groupValues
-        if (g[1].isNotEmpty()) {
-            var a = g[1].toIntOrNull() ?: continue
-            var b = g[2].toIntOrNull() ?: continue
-            if (a > b) { val t = a; a = b; b = t }
-            for (i in a..b) if (i in 1..53) out.add(i)
-        } else {
-            g[3].toIntOrNull()?.let { if (it in 1..53) out.add(it) }
-        }
-    }
-    return out.toList()
-}
-
 /** 编辑课程里的可视化选时段：7 列(星期) × 11 行(节次)，可连续点选 / 拖拽，多选组合出多个时段。
  *  右上角「放大」按钮可全屏放大选择，格子更大更好拖。 */
 @Composable
@@ -1445,8 +1437,11 @@ private fun PeriodGrid(
                 ) { Text("$p", fontSize = 9.sp, color = th.textSecondary) }
             }
             Box(
-                Modifier.weight(1f).height(cellH * 11).clip(RoundedCornerShape(8.dp))
+                // 宽度必须是 cellW*7 的精确值：手势按 size.width/7 划分格子，
+                // 若用 weight(1f) 拉伸，画出来的格子（cellW 间距）和手势命中区（宽/7 间距）会错位
+                Modifier.width(cellW * 7).height(cellH * 11).clip(RoundedCornerShape(8.dp))
                     .background(th.divider.copy(alpha = 0.35f))
+                    .testTag("periodGrid")
                     .pointerInput(Unit) {
                         val w = size.width / 7f; val h = size.height / 11f
                         fun cell(x: Float, y: Float): Pair<Int, Int> =
@@ -1649,7 +1644,7 @@ fun EditCourseDialog(
                 Button(shape = RoundedCornerShape(12.dp), enabled = valid, onClick = {
                     onConfirm(
                         name, teacher, location, slotsToRuns(slots),
-                        if (thisWeekOnly) listOf(currentWeek) else parseWeeksText(weeksText),
+                        if (thisWeekOnly) listOf(currentWeek) else parseWeekNumbers(weeksText),
                         thisWeekOnly, syncSameName && sameNameCount > 1
                     )
                 }, modifier = Modifier.testTag("editSaveButton")) { Text("保存") }
@@ -1830,6 +1825,33 @@ fun SettingsDialog(
                 )
             }
             bgUri = uri.toString()
+        }
+    }
+
+    // 导出 Excel：用户选保存位置后，把课表表格数据原样导出成 .xlsx（网格表 + 全字段课程清单）
+    val exportScope = rememberCoroutineScope()
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    ) { uri ->
+        if (uri != null) {
+            exportScope.launch {
+                val ok = withContext(Dispatchers.IO) {
+                    runCatching {
+                        val s = Repository.loadSchedule()
+                        context.contentResolver.openOutputStream(uri)?.use {
+                            it.write(ExcelExport.buildWorkbook(s, s.campus))
+                        } ?: return@runCatching false
+                        true
+                    }.getOrDefault(false)
+                }
+                Toast.makeText(
+                    context,
+                    if (ok) "已导出 Excel（含课程表 + 课程清单两张表）" else "导出失败，请重试",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
     }
 
@@ -2042,6 +2064,17 @@ fun SettingsDialog(
                     )
                 }
 
+                SectionTitle("导出", th.accent, "📤")
+                SettingsCard(th) {
+                    SettingsRow(
+                        th, "📤", SETTING_TINTS[5], "导出 Excel 课表",
+                        subtitle = "横轴星期、纵轴节次的课程表 + 一门课一行的课程清单（老师/教室/节次/周次/学分/备忘录都在；教务没给的显示「——」，可在 Excel 里自己补）",
+                        onClick = {
+                            exportLauncher.launch(ExcelExport.suggestedFileName(Repository.loadSchedule()))
+                        }
+                    ) { SettingsChevron(th) }
+                }
+
                 SectionTitle("关于", th.accent, "ℹ️")
                 SettingsCard(th) {
                     // 更新公告：拉最新 Release 的公告正文（与自动弹窗共用一套内容）
@@ -2252,44 +2285,6 @@ fun openUrl(ctx: android.content.Context, url: String) {
     try {
         ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
     } catch (_: Exception) {}
-}
-
-/**
- * 学分抓取脚本：在已登录的教务页面里先取「个人中心」门户页的节次模式 GUID，
- * 再 fetch 个人中心课表（mainV_index_loadkb.htmlx，悬停课程卡片显示的浮层
- * 就是其中 div.item-box，内含「学分：X」），把整页 HTML 回传 AndroidGrab.receiveKb。
- * 手动导入（ImportActivity）与后台自动更新（MainActivity）共用。
- */
-fun loadKbJs(term: String): String {
-    val t = term.replace("\\", "\\\\").replace("'", "\\'")
-    return """(function(){
-function done(h){try{AndroidGrab.receiveKb(h||'')}catch(e){}}
-function guid(cb){
- var x=new XMLHttpRequest();
- x.open('GET','/jsxsd/framework/xsMainV_new.htmlx?t1=1',true);
- x.timeout=8000;
- x.onload=function(){
-  var t=x.responseText||'';
-  var m=t.match(/class="layui-this"[^>]*data-value="([0-9A-Fa-f]{32})"/)||
-        t.match(/data-value="([0-9A-Fa-f]{32})"[^>]*class="layui-this"/)||
-        t.match(/data-value="([0-9A-Fa-f]{32})"/);
-  cb(m?m[1]:'');
- };
- x.onerror=function(){cb('')};x.ontimeout=function(){cb('')};
- x.send();
-}
-guid(function(g){
- if(!g){done('');return;}
- var x=new XMLHttpRequest();
- var term='$t';
- var q='rq=all&sjmsValue='+g+(term?('&xnxqid='+encodeURIComponent(term)):'')+'&xswk=false';
- x.open('GET','/jsxsd/framework/mainV_index_loadkb.htmlx?'+q,true);
- x.timeout=10000;
- x.onload=function(){done(x.responseText||'')};
- x.onerror=function(){done('')};x.ontimeout=function(){done('')};
- x.send();
-});
-})();"""
 }
 
 

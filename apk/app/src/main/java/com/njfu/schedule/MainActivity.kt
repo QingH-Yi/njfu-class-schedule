@@ -18,7 +18,14 @@ import androidx.activity.compose.ManagedActivityResultLauncher
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -53,6 +60,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -469,11 +477,19 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                 if (schedule.courses.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("还没有课表", color = th.textSecondary)
-                            Spacer(Modifier.height(12.dp))
-                            Button(onClick = {
-                                launcher.launch(Intent(context, ImportActivity::class.java))
-                            }) {
+                            Text("📅", fontSize = 46.sp)
+                            Spacer(Modifier.height(14.dp))
+                            Text("还没有课表", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = th.textPrimary)
+                            Spacer(Modifier.height(5.dp))
+                            Text(
+                                "从教务导入，或点网格空白格手动添加",
+                                fontSize = 12.5.sp, color = th.textSecondary
+                            )
+                            Spacer(Modifier.height(20.dp))
+                            Button(
+                                onClick = { launcher.launch(Intent(context, ImportActivity::class.java)) },
+                                shape = RoundedCornerShape(14.dp)
+                            ) {
                                 Icon(Icons.Default.Add, contentDescription = null)
                                 Spacer(Modifier.width(6.dp))
                                 Text("去导入课表")
@@ -481,10 +497,14 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                         }
                     }
                 } else {
-                    // 课表 ↔ 列表 切换用淡入淡出 + 轻微缩放过渡，比硬切自然
-                    Crossfade(
+                    // 课表 ↔ 列表 切换：淡入淡出 + 朝切换方向的轻微横滑，比硬切自然
+                    AnimatedContent(
                         targetState = gridView,
-                        animationSpec = tween(durationMillis = 240),
+                        transitionSpec = {
+                            (fadeIn(tween(durationMillis = 220)) +
+                                slideInHorizontally(tween(220)) { if (targetState) -36 else 36 })
+                                .togetherWith(fadeOut(tween(durationMillis = 150)))
+                        },
                         label = "viewSwitch"
                     ) { isGrid ->
                         if (isGrid) {
@@ -1111,21 +1131,30 @@ fun TimetableView(
                                             val color = th.cardColor(c.name)
                                             val dimmed = seg.dim
                                             val bodyAlpha = if (dimmed) 0.55f else 1f
+                                            val cellSelected = !dimmed && selectedKey == "c:" + c.id
+                                            // 选中：轻微回弹缩放 + 边框淡入（spring 收尾利落不拖沓）
+                                            val cellScale by animateFloatAsState(
+                                                targetValue = if (cellSelected) 0.955f else 1f,
+                                                animationSpec = spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessMedium),
+                                                label = "cellSel"
+                                            )
+                                            val borderColor by animateColorAsState(
+                                                targetValue = if (cellSelected) th.accent else Color.Transparent,
+                                                animationSpec = tween(durationMillis = 140),
+                                                label = "cellBorder"
+                                            )
                                             Box(
                                                 Modifier
                                                     .padding(horizontal = 1.dp, vertical = 2.dp)
                                                     .height(slotH * seg.span - 4.dp)
                                                     .fillMaxWidth()
+                                                    .scale(cellScale)
                                                     .clip(RoundedCornerShape(10.dp))
                                                     .background(
                                                         if (dimmed) color.first.copy(alpha = 0.30f)
                                                         else color.first
                                                     )
-                                                    .then(
-                                                        if (!dimmed && selectedKey == "c:${c.id}")
-                                                            Modifier.border(2.dp, th.accent, RoundedCornerShape(10.dp))
-                                                        else Modifier
-                                                    )
+                                                    .border(2.dp, borderColor, RoundedCornerShape(10.dp))
                                                     .pointerInput(c.id, dimmed) {
                                                         val key = "c:${c.id}"
                                                         detectTapGestures(

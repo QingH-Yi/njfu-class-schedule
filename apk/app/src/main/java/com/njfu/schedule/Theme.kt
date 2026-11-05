@@ -215,7 +215,15 @@ fun MacDialog(
                     alpha = progress
                 }
             ) {
-                Column(Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
+                Column(
+                    Modifier
+                        .padding(horizontal = 20.dp, vertical = 18.dp)
+                        .graphicsLayer {
+                            // 内容随弹窗展开淡入 + 轻微上移，进场更有层次（有限时长，不阻塞测试 idle）
+                            alpha = ((progress - 0.45f) / 0.55f).coerceIn(0f, 1f)
+                            translationY = (1f - progress) * 18f
+                        }
+                ) {
                     content(close)
                 }
             }

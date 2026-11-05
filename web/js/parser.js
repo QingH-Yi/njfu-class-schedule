@@ -132,66 +132,127 @@
     return b + ' ' + r;
   }
 
-  // 按 <font title='...'> 精确解析一个课程块。识别：课名（无 title 的 font）、周次(节次)、教室、教学楼、教师。
-  // 解析不出课名 / 没有 title 字段时返回 null，调用方回退到"按行猜"的老逻辑。
-  function parseCellByTitle(html) {
+  // 按 <font title='...'> 精确解析一个课程块（可产出多门课）。
+  // 一个块里可能塞多门课（如"动物与人类"+补课的 PLC）：无 title 的课名字体开启新课组，
+  // 其后的 title 字体（教师/教室/周次）归该组——四位老师只归自己的课，不会并到同格另一门课。
+  // 同名多组（同格的显示层+悬停浮层两套呈现）合并互补：教师/节次以浮层为准。
+  // 与 JwxtParser.kt 的 parseCellByTitleMulti 保持同步（改一处必须同步另一处）。
+  function parseCellByTitleMulti(html) {
     var doc = new DOMParser().parseFromString('<div>' + html + '</div>', 'text/html');
-    var fonts = doc.querySelectorAll('font[title]');
-    if (!fonts.length) return null;
-    var course = { name: '', teacher: '', location: '', weeks: null, startPeriod: null, endPeriod: null, startTime: '', endTime: '', building: '' };
-    var periodList = null;
+    var fonts = doc.querySelectorAll('font');
+    var hasTitle = false;
+    for (var t0 = 0; t0 < fonts.length; t0++) if (fonts[t0].hasAttribute('title')) { hasTitle = true; break; }
+    if (!hasTitle) return [];
+
+    var groups = [], cur = null;
     for (var i = 0; i < fonts.length; i++) {
       var f = fonts[i];
       var title = (f.getAttribute('title') || '').trim();
-      var text = (f.textContent || '').replace(/[ 　\s]+/g, ' ').trim();
+      var text = (f.textContent || '').replace(/[　\s]+/g, ' ').trim();
       if (!text) continue;
+      if (!f.hasAttribute('title')) {
+        // 课名字体：第一段开新课；再出现 = 同块还有另一门课。
+        // "(讲课:33)" 这类无 title 括号注释不算课名
+        if (/^\(.*\)$/.test(text)) continue;
+        if (!cur || cur.name) { cur = newCourse(); groups.push(cur); }
+        if (!cur.name) cur.name = text;
+        continue;
+      }
+      if (!cur) { cur = newCourse(); groups.push(cur); }
       if (title === '周次(节次)' || title === '周次') {
         var pl = parsePeriodList(text);
-        if (pl && !periodList) {
-          periodList = pl;
-          if (/周/.test(text)) {
-            var wk = parseWeeks(text.replace(/\[.*?\]/g, ' '));
-            if (wk && !course.weeks) course.weeks = wk;
-          }
-        } else if (isWeekLine(text) && !course.weeks) {
-          course.weeks = parseWeeks(text);
+        if (pl && !cur.periodList) {
+          cur.periodList = pl;
+          var wk = parseWeeks(text.replace(/\[.*?\]/g, ' '));
+          if (wk && !cur.weeks) cur.weeks = wk;
+        } else if (isWeekLine(text) && !cur.weeks) {
+          cur.weeks = parseWeeks(text);
         }
-      } else if (title === '教室') { if (!course.location) course.location = text; }
-      else if (title === '教学楼') { if (!course.building) course.building = text; }
-      else if (title === '教师') { if (!course.teacher) course.teacher = text; }
+      } else if (title === '教室') { if (cur.rooms.indexOf(text) < 0) cur.rooms.push(text); }
+      else if (title === '教学楼') { if (!cur.building) cur.building = text; }
+      else if (title === '教师') { if (cur.teachers.indexOf(text) < 0) cur.teachers.push(text); }
     }
-    var allFonts = doc.querySelectorAll('font');
-    for (var j = 0; j < allFonts.length; j++) {
-      if (!allFonts[j].hasAttribute('title')) {
-        var nm = (allFonts[j].textContent || '').replace(/[ 　\s]+/g, ' ').trim();
-        if (nm) { course.name = nm; break; }
-      }
+
+    // 同名组：同格的显示层+浮层是同一门课，字段互补；老师/周次/节次任一不同 = 真两门课
+    var merged = [], byName = {};
+    for (var g = 0; g < groups.length; g++) {
+      var grp = groups[g];
+      if (!grp.name) continue;
+      var prev = byName[grp.name];
+      if (!prev) { byName[grp.name] = grp; merged.push(grp); continue; }
+      if (isTwoCourses(prev, grp)) { byName[grp.name + '#' + merged.length] = grp; merged.push(grp); continue; }
+      if (!prev.teachers.length) prev.teachers = grp.teachers.slice();
+      if (!prev.rooms.length) prev.rooms = grp.rooms.slice();
+      if (!prev.building) prev.building = grp.building;
+      if (!prev.weeks) prev.weeks = grp.weeks;
+      if (!prev.periodList) prev.periodList = grp.periodList;
     }
-    if (!course.name) return null;
-    course.location = normalizeLocation(course.building, course.location);
-    if (periodList) { course.startPeriod = periodList[0]; course.endPeriod = periodList[periodList.length - 1]; }
-    return course;
+    var out = [];
+    for (var m = 0; m < merged.length; m++) {
+      var c = merged[m];
+      if (!c.name) continue;
+      // 合并后重算字符串字段（按行回退路径的字段直接在字符串上，集合为空时保留原值）
+      if (c.teachers.length) c.teacher = c.teachers.join(',');
+      if (c.rooms.length || c.building) c.location = normalizeLocation(c.building, c.rooms.join('；'));
+      if (c.periodList) { c.startPeriod = c.periodList[0]; c.endPeriod = c.periodList[c.periodList.length - 1]; }
+      // 注意：teachers/rooms/periodList 集合字段保留——上层的 mergeLayerGroups 跨层合并还要用
+      out.push(c);
+    }
+    return out;
+  }
+
+  function newCourse() {
+    return { name: '', teacher: '', location: '', weeks: null, startPeriod: null, endPeriod: null,
+             startTime: '', endTime: '', building: '', teachers: [], rooms: [], periodList: null };
+  }
+
+  /** 同名两组是否真是两门课（老师/周次/节次任一都齐全且不同） */
+  function isTwoCourses(prev, grp) {
+    var pT = (prev.teachers || []).join(','), cT = (grp.teachers || []).join(',');
+    var pW = (prev.weeks || []).join(','), cW = (grp.weeks || []).join(',');
+    var pP = prev.periodList, cP = grp.periodList;
+    return (pT && cT && pT !== cT) || (pW && cW && pW !== cW) ||
+           (pP && cP && (pP[0] !== cP[0] || pP[pP.length - 1] !== cP[cP.length - 1]));
+  }
+
+  /** 兼容入口：单课块（取第一组） */
+  function parseCellByTitle(html) {
+    var all = parseCellByTitleMulti(html);
+    return all.length ? all[0] : null;
   }
 
   /* ---------- 单元格解析（兼容旧版 + 新版正方门户） ---------- */
   function parseCell(html) {
-    // 优先：按 <font title='教师'/'教室'/'教学楼'/'周次(节次)'> 精确解析（与 JwxtParser.kt 的 parseCellByTitle 同步）。
-    // 强智课表页每个字段都带 title，这是最可靠的来源——比"猜哪行是老师/教室"准得多。
     var byTitle = parseCellByTitle(html);
     if (byTitle) return byTitle;
+    return parseCellByLines(html, true)[0] || null;
+  }
 
+  /** 单块解析（可产出多门课）：先按 title 分组精确解析；解析不出且 allowFallback 才按行猜。
+   *  与 JwxtParser.kt 的 parseCellBlocks 保持同步（改一处必须同步另一处）。 */
+  function parseCellBlocks(html, allowFallback) {
+    var byTitle = parseCellByTitleMulti(html);
+    if (byTitle.length) return byTitle;
+    return parseCellByLines(html, allowFallback);
+  }
+
+  /** 老回退：无 title 标注的页面按行猜字段（loadkb 预览等非标准页才走到）。
+   *  allowFallback=false（标准课表格）时绝不猜：猜会把教室猜成老师（字段错位根因）。
+   *  与 JwxtParser.kt 的 parseCellByLines 保持同步（改一处必须同步另一处）。 */
+  function parseCellByLines(html, allowFallback) {
+    if (!allowFallback) return [];
     var lines = innerText(html).filter(function (l) {
-      // 强智格子里的"通知单编号/班级/备注"管理元数据、横线分隔行、
+      // 强智格子里的"通知单编号/班级/备注/学分/群号/链接"管理元数据、横线分隔行、
       // "(讲课:16)"/"(舞龙)"等括号备注不是课程字段
-      return !/^(通知单编号|班级|备注|学分)/.test(l) &&
+      return !/^(通知单编号|班级|备注|学分|群号|链接)/.test(l) &&
              !/^[-—=_]{3,}/.test(l) &&
              !/^\(.*\)$/.test(l) &&
              // 个人中心课表页的卡片名会被服务端截断成 "电气控制与..."，丢弃这种残名
              !/[.．…]{2,}$/.test(l);
     });
-    if (!lines.length) return null;
+    if (!lines.length) return [];
 
-    var course = { name: '', teacher: '', location: '', weeks: null, startPeriod: null, endPeriod: null, startTime: '', endTime: '' };
+    var course = newCourse();
     var used = {};
     var periodList = null;
 
@@ -205,7 +266,6 @@
         if (course.startPeriod == null) { course.startPeriod = pl[0]; course.endPeriod = pl[pl.length - 1]; }
         // 该行可能同时带周次；先剥掉 "01~02~03小节" 再取周次，避免小节号混进周次。
         // 但只有该行确实含"周"时才取，否则纯节次行 "01~02~03节" 会被误当成周次 [1,2,3]
-        // （与 JwxtParser.kt 的 parseCellBlock 保持同步）。
         if (/周/.test(l)) {
           var wkSame = parseWeeks(String(l).replace(/\d+(?:\s*[-~—–]\s*\d+)+\s*小节/g, ' '));
           if (wkSame && !course.weeks) course.weeks = wkSame;
@@ -244,14 +304,18 @@
         if (tm2) { if (!course.teacher) course.teacher = tm2[1].trim(); continue; }
         // 地点：含楼/教/实验/馆/室/校区 等，或形如 教9-101 / 实验楼A302
         var looksPlace = /(楼|教|实验|馆|室|区|号楼|楼\d|\d{2,4}\b)/.test(line) && !/@/.test(line);
+        // 在线教学类文本是"地点"（放教室栏），绝不当老师
+        if (line.indexOf('在线') >= 0) { if (!course.location) course.location = line; continue; }
         var looksTeacher = /(老师|教授|副教授|讲师|博士)/.test(line) || /^[一-龥·、,\s]{2,12}$/.test(line);
         if (!course.location && looksPlace && !looksTeacher) { course.location = normalizeLocation('', line); }
-        else if (!course.teacher && (looksTeacher || (!course.location && !looksPlace))) { course.teacher = course.teacher ? course.teacher + '、' + line : line; }
-        else if (!course.location && !course.teacher) { course.teacher = line; }
+        // 地点样式的行永远不进老师栏（宁空勿错）
+        else if (!course.teacher && looksTeacher && !looksPlace) { course.teacher = line; }
+        else if (!course.location && !course.teacher && !looksPlace) { course.location = normalizeLocation('', line); }
+        else if (course.location && !course.teacher && !looksPlace) { course.teacher = line; }
       }
     }
-    if (!course.name) return null;
-    return course;
+    if (!course.name) return [];
+    return [course];
   }
 
   /* ---------- 星期表头识别 ---------- */
@@ -451,32 +515,54 @@
    * 都取不到则退回整格单课解析。与 JwxtParser.kt 的 parseCellMulti 保持同步（改一处必须同步另一处）。
    */
   function parseCellMulti(td) {
-    // 个人中心课表页：每门课一个 div.item-box（完整课名），
-    // 同一 td 里还并排一个 span.box（服务端截断的课名 + 教师 + 周次），是重复信息。
-    // 必须优先按 item-box 逐门解析，否则整格解析会把浮层里的"学分：X"混进教室字段。
+    // 个人中心课表页：每门课一个 div.item-box（完整字段文本），优先逐个解析。
+    // 标准页的 div.item-box 只是字段前插的二维码空壳（仅 img），解析不出东西，自然落到下一层。
+    // 标准页 div.kbcontent1（显示层：课名/周次/教室，无教师）+ div.kbcontent（悬停完整层：
+    // 课名/教师/教学楼/教室/节次）。全部解析后按课名合并互补（与 JwxtParser.kt 的 parseCellMulti 同步）。
+    var hasTitles = td.querySelectorAll('font[title]').length > 0;
+    var noGuess = !hasTitles;
     var itemBoxes = td.querySelectorAll('div.item-box');
     if (itemBoxes.length >= 1) {
       var out = [];
       for (var a = 0; a < itemBoxes.length; a++) {
-        var pa = parseCell(itemBoxes[a].innerHTML);
-        if (!pa || !pa.name) continue;
-        out.push(pa);
+        out = out.concat(parseCellBlocks(itemBoxes[a].innerHTML, noGuess));
       }
-      if (out.length) return out;
+      if (out.length) return mergeLayerGroups(out);
     }
-    // 强智标准课表页：每门课一个 div.kbcontent1（同格多门课时逐门产出）
-    var blocks = td.querySelectorAll('div.kbcontent1');
-    if (blocks.length >= 2) {
+    var layers = hasTitles ? td.querySelectorAll('div.kbcontent, div.kbcontent1') : [];
+    if (layers.length >= 1) {
       var out2 = [];
-      for (var b = 0; b < blocks.length; b++) {
-        var pb = parseCell(blocks[b].innerHTML);
-        if (!pb || !pb.name) continue;
-        out2.push(pb);
+      for (var b = 0; b < layers.length; b++) {
+        out2 = out2.concat(parseCellBlocks(layers[b].innerHTML, noGuess));
       }
-      if (out2.length) return out2;
+      if (out2.length) return mergeLayerGroups(out2);
     }
-    var one = parseCell(td.innerHTML);
-    return one ? [one] : [];
+    return parseCellBlocks(td.innerHTML, noGuess);
+  }
+
+  /** 跨层同名合并（与 JwxtParser.kt 的 mergeLayerGroups 保持同步） */
+  function mergeLayerGroups(all) {
+    var merged = [], byName = {};
+    for (var i = 0; i < all.length; i++) {
+      var c = all[i];
+      var prev = byName[c.name];
+      if (!prev) { byName[c.name] = c; merged.push(c); continue; }
+      if (isTwoCourses(prev, c)) { byName[c.name + '#' + merged.length] = c; merged.push(c); continue; }
+      // 按行回退产出的组没有集合字段（undefined），同样要能并入浮层组的字段
+      if ((!prev.teachers || !prev.teachers.length) && c.teachers) prev.teachers = c.teachers.slice();
+      if ((!prev.rooms || !prev.rooms.length) && c.rooms) prev.rooms = c.rooms.slice();
+      if (!prev.building && c.building) prev.building = c.building;
+      if (!prev.weeks && c.weeks) prev.weeks = c.weeks;
+      if (!prev.periodList && c.periodList) prev.periodList = c.periodList;
+    }
+    for (var m = 0; m < merged.length; m++) {
+      var g = merged[m];
+      if (g.teachers && g.teachers.length) g.teacher = g.teachers.join(',');
+      if ((g.rooms && g.rooms.length) || g.building) g.location = normalizeLocation(g.building || '', (g.rooms || []).join('；'));
+      if (g.periodList) { g.startPeriod = g.periodList[0]; g.endPeriod = g.periodList[g.periodList.length - 1]; }
+      delete g.teachers; delete g.rooms; delete g.building; delete g.periodList;
+    }
+    return merged;
   }
   /**
    * 从格子里 jsxsd 的隐藏 input（name=jx0415zbdiv_<小节>，value="HASH-<星期列>-<组号>"）
@@ -525,6 +611,9 @@
 
   var api = {
     parseCourseTable: parseCourseTable,
+    parseCellByTitleMulti: parseCellByTitleMulti,
+    parseCellBlocks: parseCellBlocks,
+    mergeLayerGroups: mergeLayerGroups,
     parseCredits: parseCredits,
     parseWeeks: parseWeeks,
     parsePeriods: parsePeriods,

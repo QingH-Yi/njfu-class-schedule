@@ -538,9 +538,8 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
         val c = schedule.courses.firstOrNull { it.id == c0.id } ?: c0
         val color = th.cardColor(c.name)
         var note by remember(c.id) { mutableStateOf(c.note ?: "") }
-        var credit by remember(c.id) { mutableStateOf(c.credit ?: "") }
-        // 备忘录/学分任一改动都算"未保存"；保存 = 一起写回表格数据（单一数据源），界面再从表格提取
-        val metaDirty = note.trim() != (c.note ?: "") || credit.trim() != (c.credit ?: "")
+        // 学分只在"编辑"弹窗里改；详情页与其它行统一为只读展示（空值显——）
+        val noteDirty = note.trim() != (c.note ?: "")
         // 同名课在本周的其他上课时间（如周三/周五都上 → 逐行列出）
         val sameName = schedule.courses
             .filter { it.name == c.name && it.day != 0 }
@@ -587,28 +586,7 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                     InfoRow("📍", "教室", c.location.ifEmpty { "——" }, th)
                     InfoRow("👨‍🏫", "老师", c.teacher.ifEmpty { "——" }, th)
                     InfoRow("🔁", "周次", weekLabel(c.weeks), th)
-                    Spacer(Modifier.height(8.dp))
-                    // 学分：教务爬到的直接带出；没爬到（实习/设计课教务本来就没有）留空让用户自己填
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("🎓", fontSize = 13.sp)
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "学分", fontSize = 11.sp, color = th.textSecondary,
-                            modifier = Modifier.width(38.dp)
-                        )
-                        OutlinedTextField(
-                            credit, { credit = it },
-                            placeholder = {
-                                Text(
-                                    "没抓到？自己填，如 3.0",
-                                    fontSize = 12.sp, color = th.textSecondary.copy(alpha = 0.7f)
-                                )
-                            },
-                            singleLine = true,
-                            textStyle = LocalTextStyle.current.copy(fontSize = 13.sp, color = th.textPrimary),
-                            modifier = Modifier.weight(1f).heightIn(min = 52.dp).testTag("creditField")
-                        )
-                    }
+                    InfoRow("🎓", "学分", c.credit.orEmpty().ifEmpty { "——" }, th)
                     Spacer(Modifier.height(10.dp))
                     HorizontalDivider(color = th.divider, thickness = 1.dp)
                     Spacer(Modifier.height(10.dp))
@@ -632,19 +610,19 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (metaDirty) {
+                    if (noteDirty) {
                         Text("未保存", fontSize = 11.sp, color = th.textSecondary)
                         Spacer(Modifier.width(8.dp))
                     }
                     TextButton(
-                        enabled = metaDirty,
+                        enabled = noteDirty,
                         onClick = {
-                            // 备忘录 + 学分一起写回表格数据（课程所有内容都可由用户自由编辑）
-                            Repository.updateCourseMeta(c, note.trim(), credit.trim())
+                            // 备忘录写回表格数据；学分在编辑弹窗里改
+                            Repository.updateCourseMeta(c, note.trim(), c.credit ?: "")
                             schedule = Repository.loadSchedule()
                             detail = schedule.courses.firstOrNull { it.id == c.id } ?: c0
                         }
-                    ) { Text("保存", color = if (metaDirty) th.accent else th.textSecondary) }
+                    ) { Text("保存", color = if (noteDirty) th.accent else th.textSecondary) }
                     Spacer(Modifier.width(4.dp))
                     TextButton(onClick = { editTarget = c }) {
                         Text("编辑", color = th.accent)
@@ -668,14 +646,14 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
             course = cur, currentWeek = currentWeek, th = th,
             sameNameCourses = sameName,
             onDismiss = { editTarget = null },
-            onConfirm = { name, teacher, location, slots, weeks, onlyThisWeek, syncSameName ->
+            onConfirm = { name, teacher, location, credit, slots, weeks, onlyThisWeek, syncSameName ->
                 if (slots.isEmpty() && cur.day != 0) {
                     // 时段全部清空 = 按所选范围删除（仅本周→拆周次；整学期→整门删，防重抓导回）
                     Repository.deleteCourse(cur, onlyThisWeek, currentWeek, syncSameName)
                 } else if (syncSameName) {
-                    Repository.editCourseSameName(cur, name, teacher, location, slots, weeks, onlyThisWeek, currentWeek)
+                    Repository.editCourseSameName(cur, name, teacher, location, credit, slots, weeks, onlyThisWeek, currentWeek)
                 } else {
-                    Repository.editCourse(cur, name, teacher, location, slots, weeks, onlyThisWeek, currentWeek)
+                    Repository.editCourse(cur, name, teacher, location, credit, slots, weeks, onlyThisWeek, currentWeek)
                 }
                 schedule = Repository.loadSchedule()
                 editTarget = null
@@ -1533,12 +1511,14 @@ fun EditCourseDialog(
     th: AppColors,
     sameNameCourses: List<Course> = listOf(course),
     onDismiss: () -> Unit,
-    onConfirm: (name: String, teacher: String, location: String, slots: List<Triple<Int, Int, Int>>, weeks: List<Int>, onlyThisWeek: Boolean, syncSameName: Boolean) -> Unit
+    onConfirm: (name: String, teacher: String, location: String, credit: String, slots: List<Triple<Int, Int, Int>>, weeks: List<Int>, onlyThisWeek: Boolean, syncSameName: Boolean) -> Unit
 ) {
     val sameNameCount = sameNameCourses.size
     var name by remember { mutableStateOf(course.name) }
     var teacher by remember { mutableStateOf(course.teacher) }
     var location by remember { mutableStateOf(course.location) }
+    // 学分在这里改（详情页只读）：清空保存 = 清掉学分
+    var credit by remember { mutableStateOf(course.credit ?: "") }
     var slots by remember {
         mutableStateOf(
             if (course.day == 0) emptySet()
@@ -1563,6 +1543,9 @@ fun EditCourseDialog(
                 SettingField(th, "👨🏫", teacher, { teacher = it }, "老师", padded = false, modifier = Modifier.weight(1f))
                 SettingField(th, "📍", location, { location = it }, "教室", padded = false, modifier = Modifier.weight(1f))
             }
+            Spacer(Modifier.height(8.dp))
+            SettingField(th, "🎓", credit, { credit = it }, "学分（教务没抓到可自己填）", padded = false,
+                modifier = Modifier.testTag("editCreditField"))
             Spacer(Modifier.height(12.dp))
             // 整周安排（实习/实验/课程设计）也能设具体时间：留空=保持整周（第 12 行横跨周一~周五）；
             // 选了具体时段就变成普通课、移到上面的网格里（Repository.editCourse 已按此处理）
@@ -1649,7 +1632,7 @@ fun EditCourseDialog(
                 Spacer(Modifier.width(6.dp))
                 Button(shape = RoundedCornerShape(12.dp), enabled = valid, onClick = {
                     onConfirm(
-                        name, teacher, location, slotsToRuns(slots),
+                        name, teacher, location, credit.trim(), slotsToRuns(slots),
                         if (thisWeekOnly) listOf(currentWeek) else parseWeekNumbers(weeksText),
                         thisWeekOnly, syncSameName && sameNameCount > 1
                     )

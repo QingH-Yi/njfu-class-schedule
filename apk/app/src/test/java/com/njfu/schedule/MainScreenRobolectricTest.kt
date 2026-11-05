@@ -420,26 +420,34 @@ class MainScreenRobolectricTest {
         assertTrue("教室行要显示", hasText("教室"))
         assertTrue("老师行要显示", hasText("老师"))
         assertTrue("周次行要显示", hasText("周次"))
-        assertTrue("学分行要显示（可编辑输入框）", hasText("学分"))
+        assertTrue("学分行要显示（只读，与其它行统一）", hasText("学分"))
         assertTrue("空值要显占位符 ——", hasText("——"))
-        rule.onNodeWithTag("creditField").assertExists()
     }
 
-    /** 详情弹窗的学分 + 备忘录都可编辑：保存后写回表格数据（单一数据源），界面从表格取回 */
+    /** 详情页备忘录可编辑保存；学分只读（风格统一），在编辑弹窗里改并写回表格数据 */
     @Test
     @Config(sdk = [34], qualifiers = "w411dp-h1600dp-mdpi")
-    fun detailCreditAndNoteEditableAndSaved() {
+    fun detailNoteSavesAndCreditEditsInEditDialog() {
         seed()
         rule.setContent { ScheduleApp(mutableStateOf(0)) }
         rule.waitForIdle()
+        // 备忘录：详情页保存
         openDetail("信号与系统分析")
-        rule.onNodeWithTag("creditField").performTextInput("3.5")
         rule.onNodeWithTag("detailNoteField").performTextInput("第10周交报告")
         rule.onNodeWithText("保存").performClick()
         rule.waitForIdle()
-        val c = Repository.loadSchedule().courses.first { it.id == "c2" }
-        assertEquals("学分要写回课表数据", "3.5", c.credit)
+        var c = Repository.loadSchedule().courses.first { it.id == "c2" }
         assertEquals("备忘录要写回课表数据", "第10周交报告", c.note)
+        assertTrue("学分行此时应为空", c.credit.isNullOrEmpty())
+        // 学分：进编辑弹窗填写保存
+        rule.onAllNodesWithText("编辑")[0].performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("editCreditField").performTextInput("3.5")
+        rule.onNodeWithTag("editSaveButton").performClick()
+        rule.waitForIdle()
+        c = Repository.loadSchedule().courses.first { it.id == "c2" }
+        assertEquals("学分要写回课表数据", "3.5", c.credit)
+        assertEquals("备忘录不能被编辑弹窗弄丢", "第10周交报告", c.note)
     }
 
     /** 清空时段 = 整门课删除（用户明确要求的第二条删除路径） */

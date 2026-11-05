@@ -210,7 +210,7 @@ object Repository {
         }.distinct()
 
     fun editCourse(
-        course: Course, name: String, teacher: String, location: String,
+        course: Course, name: String, teacher: String, location: String, credit: String? = null,
         slots: List<Triple<Int, Int, Int>>, weeks: List<Int>, onlyThisWeek: Boolean, currentWeek: Int
     ) {
         val cur = loadSchedule()
@@ -219,6 +219,8 @@ object Repository {
         val nm = name.trim()
         val tc = teacher.trim()   // 留空 = 保留原值（下方 per-course 兜底）
         val lo = location.trim()
+        // 学分：credit=null（未提供）= 保留原值；传空串 = 清掉学分（编辑框清空保存）
+        val cr0 = credit?.trim()
         val ws = weeks.filter { it in 1..53 }.distinct().sorted()
         val norm = normSlots(slots)
         val out = ArrayList<Course>()
@@ -227,16 +229,17 @@ object Repository {
             val nm2 = nm.ifEmpty { c.name }
             val tc2 = tc.ifEmpty { c.teacher }
             val lo2 = lo.ifEmpty { c.location }
+            val cr2 = if (cr0 == null) c.credit else cr0.ifEmpty { null }
             val isWholeWeek = c.day == 0 && norm.isEmpty()   // 整周课且没选时间 → 保持整周
             when {
-                isWholeWeek -> out.add(c.copy(name = nm2, teacher = tc2, location = lo2, weeks = ws, edited = true))
+                isWholeWeek -> out.add(c.copy(name = nm2, teacher = tc2, location = lo2, credit = cr2, weeks = ws, edited = true))
                 norm.isEmpty() -> out.add(c)
                 !onlyThisWeek -> {
                     val f = norm.first()
-                    out.add(c.copy(name = nm2, teacher = tc2, location = lo2, day = f.first,
+                    out.add(c.copy(name = nm2, teacher = tc2, location = lo2, credit = cr2, day = f.first,
                         startPeriod = f.second, endPeriod = f.third, weeks = ws, edited = true))
                     for (sl in norm.drop(1)) out.add(c.copy(id = UUID.randomUUID().toString().take(8),
-                        name = nm2, teacher = tc2, location = lo2, day = sl.first,
+                        name = nm2, teacher = tc2, location = lo2, credit = cr2, day = sl.first,
                         startPeriod = sl.second, endPeriod = sl.third, weeks = ws, edited = true))
                 }
                 else -> {
@@ -246,7 +249,7 @@ object Repository {
                     // 本周"拆出去"的课和它重叠 → 课程显示时有时无（用户报的显示混乱根因之一）
                     if (remain.isNotEmpty()) out.add(c.copy(weeks = remain.sorted(), edited = true))
                     for (sl in norm) out.add(c.copy(id = UUID.randomUUID().toString().take(8),
-                        name = nm2, teacher = tc2, location = lo2, day = sl.first,
+                        name = nm2, teacher = tc2, location = lo2, credit = cr2, day = sl.first,
                         startPeriod = sl.second, endPeriod = sl.third, weeks = listOf(currentWeek), edited = true))
                 }
             }
@@ -266,13 +269,13 @@ object Repository {
      * 组内课程 id 会被替换（anchor 复用原 id，其余新建），全部标 edited=true。
      */
     fun editCourseSameName(
-        course: Course, name: String, teacher: String, location: String,
+        course: Course, name: String, teacher: String, location: String, credit: String? = null,
         slots: List<Triple<Int, Int, Int>>, weeks: List<Int>, onlyThisWeek: Boolean, currentWeek: Int
     ) {
         val cur = loadSchedule()
         val group = sameNameCoursesThisWeek(cur, course, currentWeek)
         if (group.size <= 1) {
-            editCourse(course, name, teacher, location, slots, weeks, onlyThisWeek, currentWeek)
+            editCourse(course, name, teacher, location, credit, slots, weeks, onlyThisWeek, currentWeek)
             return
         }
         val groupIds = group.map { it.id }.toSet()
@@ -281,17 +284,20 @@ object Repository {
         // 老师/教室留空 = 保留原值（组里取第一个非空的），防止编辑时误把已有老师/教室清掉
         val tc = teacher.trim().ifEmpty { group.firstOrNull { it.teacher.isNotBlank() }?.teacher ?: "" }
         val lo = location.trim().ifEmpty { group.firstOrNull { it.location.isNotBlank() }?.location ?: "" }
+        // 学分：null=未提供（保留各组原值）；非 null 按新值（空串=清空）
+        val cr0 = credit?.trim()
         val ws = weeks.filter { it in 1..53 }.distinct().sorted()
         val norm = normSlots(slots)
 
         val replacements = ArrayList<Course>()
         when {
             norm.isEmpty() -> {
-                // 只改名称/老师/教室，不动时段
+                // 只改名称/老师/教室/学分，不动时段
                 group.forEach {
                     replacements.add(
                         it.copy(
                             name = nm, teacher = tc, location = lo,
+                            credit = if (cr0 == null) it.credit else cr0.ifEmpty { null },
                             weeks = if (it.day == 0) ws else it.weeks, edited = true
                         )
                     )
@@ -303,6 +309,7 @@ object Repository {
                         Course(
                             id = if (i == 0) anchor.id else UUID.randomUUID().toString().take(8),
                             name = nm, teacher = tc, location = lo,
+                            credit = if (cr0 == null) anchor.credit else cr0.ifEmpty { null },
                             day = sl.first, startPeriod = sl.second, endPeriod = sl.third,
                             weeks = ws, edited = true
                         )
@@ -318,6 +325,7 @@ object Repository {
                         replacements.add(
                             g.copy(
                                 name = nm, teacher = tc, location = lo,
+                                credit = if (cr0 == null) g.credit else cr0.ifEmpty { null },
                                 weeks = remain.sorted(), edited = true
                             )
                         )
@@ -328,6 +336,7 @@ object Repository {
                         Course(
                             id = UUID.randomUUID().toString().take(8),
                             name = nm, teacher = tc, location = lo,
+                            credit = if (cr0 == null) anchor.credit else cr0.ifEmpty { null },
                             day = sl.first, startPeriod = sl.second, endPeriod = sl.third,
                             weeks = listOf(currentWeek), edited = true
                         )

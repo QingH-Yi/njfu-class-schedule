@@ -97,4 +97,34 @@ class RepositoryEditTest {
         assertTrue(courses.any { it.day == 1 && it.startPeriod == 1 && it.endPeriod == 2 })
         assertTrue(courses.any { it.day == 5 && it.startPeriod == 7 && it.endPeriod == 8 })
     }
+
+    @Test
+    fun editCourseUpdatesCreditAndSameNameSync() {
+        Repository.init(ctx)
+        Repository.saveSchedule(Schedule("2026-2027-1", "2026-08-31", "xz", listOf(
+            Course("c1", "高数", "张三", "101", 1, 1, 2, (1..16).toList()),
+            Course("c2", "高数", "张三", "202", 3, 3, 4, (1..16).toList())
+        )))
+        val s = Repository.loadSchedule()
+        val target = s.courses.first { it.id == "c1" }
+        // 编辑弹窗路径：slots 留空 = 只改名称/师/室/学分，不动各节自己的时段
+        Repository.editCourseSameName(
+            target, name = "高数", teacher = "张三", location = "101", credit = "4.5",
+            slots = emptyList(), weeks = (1..16).toList(),
+            onlyThisWeek = false, currentWeek = 7
+        )
+        val after = Repository.loadSchedule().courses
+        assertEquals("两节都在", 2, after.size)
+        assertEquals("学分写回", "4.5", after.first { it.id == "c1" }.credit)
+        assertEquals("同名同步学分", "4.5", after.first { it.id == "c2" }.credit)
+        // 清空学分框保存 = 清掉学分
+        val t2 = after.first { it.id == "c1" }
+        Repository.editCourse(
+            t2, name = "高数", teacher = "张三", location = "101", credit = "",
+            slots = listOf(Triple(1, 1, 2)), weeks = (1..16).toList(),
+            onlyThisWeek = false, currentWeek = 7
+        )
+        val after2 = Repository.loadSchedule().courses
+        assertTrue("清空保存应清掉学分", after2.first { it.id == "c1" }.credit.isNullOrEmpty())
+    }
 }

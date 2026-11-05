@@ -449,6 +449,37 @@ object Repository {
     fun mergeCreditsRounds(rounds: List<Map<String, String>>): Map<String, String> =
         mergeCreditRounds(rounds)
 
+    /** 测试专用：不落盘地把学分按课名并进一份课表（生产路径走 applyCredits） */
+    fun applyCreditsForTest(credits: Map<String, String>, cur: Schedule): List<Course> {
+        if (credits.isEmpty()) return cur.courses
+        val norm = { s: String -> s.replace(" ", "").replace("\u00A0", "") }
+        val tail = Regex("[（(][^（()）]*[)）]\\s*$")
+        val byNorm = HashMap<String, String>()
+        for ((name, v) in credits) {
+            var n = name
+            byNorm.putIfAbsent(norm(n), v)
+            while (true) {
+                val m = tail.find(n) ?: break
+                n = n.substring(0, m.range.first).trim()
+                if (n.isEmpty()) break
+                byNorm.putIfAbsent(norm(n), v)
+            }
+        }
+        return cur.courses.map { c ->
+            var v = byNorm[norm(c.name)]
+            if (v == null) {
+                var n2 = c.name
+                while (v == null) {
+                    val m = tail.find(n2) ?: break
+                    n2 = n2.substring(0, m.range.first).trim()
+                    if (n2.isEmpty()) break
+                    v = byNorm[norm(n2)]
+                }
+            }
+            if (v != null && v.isNotEmpty()) c.copy(credit = v) else c
+        }
+    }
+
     /** 把爬到的学分按课名写入课表，返回写入条数。
      *  课名匹配：先精确（去空格），再把 loadkb 课名尾部的分组括号逐层剥掉兜底
      *  （如「体育(5)（舞龙）」可匹配课表里的「体育(5)」「体育」） */

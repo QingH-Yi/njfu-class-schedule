@@ -146,8 +146,8 @@ class MainActivity : ComponentActivity() {
                     for (d in longArrayOf(300, 3000, 8000)) {
                         wv.postDelayed({ autoLoginOnce(wv) }, d)
                     }
-                    // 登录跳转+课表渲染耗时不确定，分批多试几次抓取
-                    for (d in longArrayOf(5000, 10000, 16000)) {
+                    // 登录跳转+课表渲染耗时不确定，分批多试几次抓取（页面加载后 4s 首抓，10s 内抓完）
+                    for (d in longArrayOf(4000, 7000, 10000)) {
                         wv.postDelayed({
                             try {
                                 wv.evaluateJavascript(GRAB_JS, null)
@@ -161,7 +161,7 @@ class MainActivity : ComponentActivity() {
             // 注意：不能加载教务主页 xsMainV.jsp——主页没有课表网格，后台更新会永远抓空。
             wv.loadUrl(Repository.jwUrl.ifEmpty { "https://jwxt.njfu.edu.cn/jsxsd/xskb/xskb_list.do" })
             // 兜底释放
-            wv.postDelayed({ destroyBgWebView() }, 25000L)
+            wv.postDelayed({ destroyBgWebView() }, 20000L)
         } catch (e: Exception) {
             // 忽略：仍是上次保存的课表
         }
@@ -180,7 +180,7 @@ class MainActivity : ComponentActivity() {
                     try {
                         wv.loadUrl(Repository.jwUrl.ifEmpty { "https://jwxt.njfu.edu.cn/jsxsd/xskb/xskb_list.do" })
                     } catch (_: Exception) {}
-                }, 2500)
+                }, 1500)
             }
         }
     }
@@ -254,7 +254,7 @@ class MainActivity : ComponentActivity() {
         val grab = bgGrab ?: return
         if (!grab.markRoundsStarted()) return
         val js = loadKbJs(term)
-        for (d in longArrayOf(500, 3000, 5500)) {
+        for (d in longArrayOf(300, 900, 1500)) {
             wv.postDelayed({
                 try { bgWebView?.evaluateJavascript(js, null) } catch (_: Exception) {}
             }, d)

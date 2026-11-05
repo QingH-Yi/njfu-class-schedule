@@ -237,19 +237,29 @@ object JwxtParser {
         var building: String = "",
         var weeks: List<Int> = emptyList(),
         var startTime: String = "",
-        var endTime: String = ""
+        var endTime: String = "",
+        // title 解析的中间收集：同一课的多位老师/多间教室/该课的节次，组装时并成字符串
+        val teachers: LinkedHashSet<String> = LinkedHashSet(),
+        val rooms: LinkedHashSet<String> = LinkedHashSet(),
+        var periodList: List<Int>? = null
     )
 
     /**
-     * 解析一个课程块（td 里一门课对应的 div 内容）-> (CellInfo, startPeriod to endPeriod)。
+     * 解析一个块（td/课程 div 的 HTML），可产出多门课。
+     * 先按 font[title] 分组精确解析（多老师/同块多课各自归组）；
+     * 解析不出且 allowFallback=true（非标准页，无 title 标注）才用"按行猜"的老回退——
+     * 标准课表格绝不猜：猜会把教室猜成老师、把在线教学猜成老师（字段错位根因）。
      * 与 web/js/parser.js 的 parseCellBlock 保持同步。
      */
-    private fun parseCellBlock(blockHtml: String): Pair<CellInfo, Pair<Int?, Int?>>? {
-        // 优先：按 <font title='教师'/'教室'/'教学楼'/'周次(节次)'> 精确解析。
-        // 强智课表页每个字段都带 title 标注，这是最可靠的来源——比"猜哪行是老师/教室"准得多
-        // （曾把"阶4"教室猜成老师、真正有老师的课反而空着）。
-        parseCellByTitle(blockHtml)?.let { return it }
+    private fun parseCellBlocks(blockHtml: String, allowFallback: Boolean): List<Pair<CellInfo, Pair<Int?, Int?>>> {
+        parseCellByTitleMulti(blockHtml).let { if (it.isNotEmpty()) return it }
+        if (!allowFallback) return emptyList()
+        val one = parseCellByLines(blockHtml) ?: return emptyList()
+        return listOf(one)
+    }
 
+    /** 老回退：无 title 标注的页面按行猜字段（loadkb 预览等非标准页才走到） */
+    private fun parseCellByLines(blockHtml: String): Pair<CellInfo, Pair<Int?, Int?>>? {
         val lines = blockHtml
             .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
             .replace(Regex("</(div|p|td|li|span|font|a|b|strong|i|em)>", RegexOption.IGNORE_CASE), "\n")
@@ -258,7 +268,7 @@ object JwxtParser {
             .split('\n').map { norm(it) }.filter { it.isNotEmpty() }.distinct()
             .filter {
                 !(it.startsWith("通知单编号") || it.startsWith("班级") || it.startsWith("备注") ||
-                        it.startsWith("学分") ||
+                        it.startsWith("学分") || it.startsWith("群号") || it.startsWith("链接") ||
                         Regex("[.．…]{2,}$").containsMatchIn(it) ||
                         Regex("^[-—=_]{3,}").containsMatchIn(it) ||
                         Regex("^\\(.*\\)$").matches(it))
@@ -316,11 +326,15 @@ object JwxtParser {
                 val tm2 = Regex("^(?:教师|老师|任课)\\s*[:：]\\s*(.+)$").find(line)
                 if (tm2 != null) { if (c.teacher.isEmpty()) c.teacher = tm2.groupValues[1].trim(); continue }
                 val looksPlace = Regex("(楼|教|实验|馆|室|区|号楼|\\d{2,4})").containsMatchIn(line) && !line.contains("@")
+                // 在线教学类文本是"地点"（放教室栏），绝不当老师
+                if (line.contains("在线")) { if (c.location.isEmpty()) c.location = line; continue }
                 val looksTeacher = Regex("(老师|教授|副教授|讲师|博士)").containsMatchIn(line) ||
                         Regex("^[\\u4e00-\\u9fa5·、,\\s]{2,12}$").matches(line)
                 if (c.location.isEmpty() && looksPlace && !looksTeacher) c.location = normalizeLocation("", line)
-                else if (c.teacher.isEmpty() && (looksTeacher || (c.location.isEmpty() && !looksPlace))) c.teacher = line
-                else if (c.location.isEmpty() && c.teacher.isEmpty()) c.teacher = line
+                // 地点样式的行永远不进老师栏（宁空勿错）；都空着才兜底当老师
+                else if (c.teacher.isEmpty() && looksTeacher && !looksPlace) c.teacher = line
+                else if (c.location.isEmpty() && c.teacher.isEmpty() && !looksPlace) c.location = normalizeLocation("", line)
+                else if (c.location.isNotEmpty() && c.teacher.isEmpty() && !looksPlace) c.teacher = line
             }
         }
         if (c.name.isEmpty()) return null
@@ -329,49 +343,82 @@ object JwxtParser {
 
     /**
      * 按 <font title='...'> 精确解析一个课程块（强智课表页每个字段都带 title）。
-     * 识别：课名（无 title 的那个 font）、周次(节次)、教室、教学楼、教师。
-     * 解析不出课名 / 没有 title 字段时返回 null，调用方回退到"按行猜"的老逻辑。
+     * 一个块里可能塞多门课（如"动物与人类"+补课的 PLC）：**无 title 的课名字体开启新课组**，
+     * 其后的 title 字体（教师/教室/周次）归该组——这样四位老师只归自己的课，不会并到同格另一门课。
+     * 识别：课名（无 title 的 font）、周次(节次)、教室、教学楼、教师。
      * 与 web/js/parser.js 的 parseCellByTitle 保持同步。
      */
-    private fun parseCellByTitle(blockHtml: String): Pair<CellInfo, Pair<Int?, Int?>>? {
+    private fun parseCellByTitleMulti(blockHtml: String): List<Pair<CellInfo, Pair<Int?, Int?>>> {
         val doc = Jsoup.parseBodyFragment(blockHtml)
-        val titled = doc.select("font[title]")
-        if (titled.isEmpty()) return null
-        val c = CellInfo()
-        var periodList: List<Int>? = null
-        for (f in titled) {
+        val fonts = doc.select("font")
+        if (fonts.none { it.hasAttr("title") }) return emptyList()
+
+        val groups = ArrayList<CellInfo>()
+        var cur: CellInfo? = null
+        for (f in fonts) {
             val title = f.attr("title").trim()
             val text = norm(f.text())
             if (text.isEmpty()) continue
-            when {
-                title == "周次(节次)" || title == "周次" -> {
+            if (!f.hasAttr("title")) {
+                // 课名字体：块里第一段开新课；再出现 = 同块还有另一门课。
+                // "通知单编号/班级/备注"尾注和 "(讲课:33)" 这类无 title 括号注释不算课名
+                if (text.startsWith("(") && text.endsWith(")")) continue
+                if (cur == null || cur.name.isNotEmpty()) { cur = CellInfo(); groups.add(cur) }
+                if (cur.name.isEmpty()) cur.name = text
+                continue
+            }
+            if (cur == null) { cur = CellInfo(); groups.add(cur) }
+            when (title) {
+                "周次(节次)", "周次" -> {
                     val pl = parsePeriodList(text)
-                    if (pl != null && periodList == null) {
-                        periodList = pl
+                    if (pl != null && cur.periodList == null) {
                         // 该 font 形如 "3-8,10-13,18(周)[01-02-03节]"：既含周次又含节次
                         val wk = parseWeeks(text.replace(Regex("\\[.*?\\]"), " "))
-                        if (wk.isNotEmpty() && c.weeks.isEmpty()) c.weeks = wk
-                    } else if (isWeekLine(text) && c.weeks.isEmpty()) {
-                        c.weeks = parseWeeks(text)
+                        if (wk.isNotEmpty()) cur.weeks = wk
+                        cur.periodList = pl
+                    } else if (isWeekLine(text) && cur.weeks.isEmpty()) {
+                        cur.weeks = parseWeeks(text)
                     }
                 }
-                title == "教室" -> if (c.location.isEmpty()) c.location = text
-                title == "教学楼" -> if (c.building.isEmpty()) c.building = text.trim('【', '】')
-                title == "教师" -> if (c.teacher.isEmpty()) c.teacher = text
+                "教室" -> if (text !in cur.rooms) cur.rooms.add(text)
+                "教学楼" -> if (cur.building.isEmpty()) cur.building = text.trim('【', '】')
+                "教师" -> if (text !in cur.teachers) cur.teachers.add(text)
             }
         }
-        // 课名 = 块里没有 title 的那个 font（第一段纯文本）
-        val nameFont = doc.select("font").firstOrNull { !it.hasAttr("title") && norm(it.text()).isNotEmpty() }
-        if (nameFont != null) c.name = norm(nameFont.text())
-        if (c.name.isEmpty()) return null
-        // 教室规范化：教学楼 + 教室 合成一个干净的地点，不要中间的破折号。
-        //  - 在线课（教室含"在线"）：只留教室文本（如"新庄校区在线教学"），不加"其他-"前缀
-        //  - 教学楼为空或是"其他"：只留教室
-        //  - 其余：教学楼 + 空格 + 教室（如"教五楼 50320"）
-        c.location = normalizeLocation(c.building, c.location)
-        var sp: Int? = null; var ep: Int? = null
-        if (periodList != null) { sp = periodList.first(); ep = periodList.last() }
-        return c to (sp to ep)
+
+        val out = ArrayList<Pair<CellInfo, Pair<Int?, Int?>>>()
+        // 同一门课在 td 里常有两套呈现（简版显示层 + 悬停浮层），同名组合并、字段互补；
+        // 两个同名组都有各自老师（单双周同名师不同）才当两门课保留
+        val merged = LinkedHashMap<String, CellInfo>()
+        for (g in groups) {
+            if (g.name.isEmpty()) continue
+            val prev = merged[g.name]
+            if (prev == null) { merged[g.name] = g; continue }
+            if (prev.teachers.isNotEmpty() && g.teachers.isNotEmpty() &&
+                prev.teachers.joinToString(",") != g.teachers.joinToString(",")) {
+                merged[g.name + "#" + merged.size] = g
+                continue
+            }
+            if (prev.teachers.isEmpty()) prev.teachers.addAll(g.teachers)
+            if (prev.rooms.isEmpty()) prev.rooms.addAll(g.rooms)
+            if (prev.building.isEmpty()) prev.building = g.building
+            if (prev.weeks.isEmpty()) prev.weeks = g.weeks
+            if (prev.periodList == null) prev.periodList = g.periodList
+        }
+        for (g in merged.values) {
+            g.teacher = g.teachers.joinToString(",")
+            g.location = normalizeLocation(g.building, g.rooms.joinToString("；"))
+            val sp: Int?; val ep: Int?
+            if (g.periodList != null) { sp = g.periodList!!.first(); ep = g.periodList!!.last() } else { sp = null; ep = null }
+            out.add(g to (sp to ep))
+        }
+        return out
+    }
+
+    /** 兼容入口：单课块（item-box 等）取第一组 */
+    private fun parseCellByTitle(blockHtml: String): Pair<CellInfo, Pair<Int?, Int?>>? {
+        val all = parseCellByTitleMulti(blockHtml)
+        return all.firstOrNull()
     }
 
     /**
@@ -380,32 +427,73 @@ object JwxtParser {
      * 都取不到则退回整格单课解析。与 web/js/parser.js 的 parseCellMulti 保持同步。
      */
     private fun parseCellMulti(el: Element): List<Pair<CellInfo, Pair<Int?, Int?>>> {
-        // 个人中心课表页（mainV_index_loadkb）：每门课一个 div.item-box（完整课名），
-        // 同一 td 里还并排一个 span.box（服务端截断的课名 + 教师 + 周次），是重复信息。
-        // 必须优先按 item-box 逐门解析，否则整格解析会把浮层里的"学分：X"混进教室字段。
+        // 个人中心课表页（mainV_index_loadkb）：每门课一个 div.item-box（含完整文本字段），优先逐个解析。
+        // 标准课表页（xskb_list.do）的 div.item-box 只是每个字段前插的二维码空壳（仅 img，无字段），
+        // 在这里解析不出任何东西，自然落到下一层。
+        val hasTitles = el.select("font[title]").isNotEmpty()
+        val noGuess = !hasTitles   // 无 title 的页面才允许老回退
         val itemBoxes = el.select("div.item-box")
         if (itemBoxes.size >= 1) {
             val out = ArrayList<Pair<CellInfo, Pair<Int?, Int?>>>()
-            for (b in itemBoxes) {
-                val parsed = parseCellBlock(b.html()) ?: continue
-                if (parsed.first.name.isEmpty()) continue
-                out.add(parsed)
-            }
-            if (out.isNotEmpty()) return out
+            for (b in itemBoxes) out.addAll(parseCellBlocks(b.html(), noGuess))
+            if (out.isNotEmpty()) return mergeLayerGroups(out)
         }
-        // 强智标准课表页：每门课一个 div.kbcontent1（同格多门课时逐门产出）
-        val blocks = el.select("div.kbcontent1")
-        if (blocks.size >= 2) {
+        // 标准课表页：每格多个呈现层——div.kbcontent1（显示层：课名/周次/教室，通常无教师）
+        // 和 div.kbcontent（悬停完整层：课名/教师/教学楼/教室/节次）。
+        // 全部解析后按课名合并互补（教师/节次以悬停层为准），同格两门课（不同名/不同师）各自成组。
+        val layers = el.select("div.kbcontent, div.kbcontent1")
+        if (true) println("DBG layers=" + layers.size + " titles=" + hasTitles)
+        if (layers.size >= 1) {
             val out = ArrayList<Pair<CellInfo, Pair<Int?, Int?>>>()
-            for (b in blocks) {
-                val parsed = parseCellBlock(b.html()) ?: continue
-                if (parsed.first.name.isEmpty()) continue
-                out.add(parsed)
+            for (b in layers) {
+                out.addAll(parseCellBlocks(b.html(), noGuess))
             }
-            if (out.isNotEmpty()) return out
+            if (out.isNotEmpty()) return mergeLayerGroups(out)
         }
-        val one = parseCellBlock(el.html()) ?: return emptyList()
-        return listOf(one)
+        // 都没有（旧版页面）：整个 td 一起解析
+        return mergeLayerGroups(parseCellBlocks(el.html(), noGuess))
+    }
+
+    /**
+     * 跨层合并：同一格的"显示层组 + 悬停浮层组"是同一门课（同名），字段互补——
+     * 教师/教学楼/节次以悬停层为准（显示层没有教师、周次不带节次）。
+     * 同名但两套老师（单双周同名不同师的真两门课）才保留两条。
+     */
+    private fun mergeLayerGroups(
+        all: List<Pair<CellInfo, Pair<Int?, Int?>>>
+    ): List<Pair<CellInfo, Pair<Int?, Int?>>> {
+        val merged = LinkedHashMap<String, CellInfo>()
+        val periods = HashMap<String, Pair<Int?, Int?>>()
+        for ((c, p) in all) {
+            val prev = merged[c.name]
+            if (prev == null) { merged[c.name] = c; periods[c.name] = p; continue }
+            val pT = prev.teachers.joinToString(","); val cT = c.teachers.joinToString(",")
+            val pW = prev.weeks.joinToString(","); val cW = c.weeks.joinToString(",")
+            val pP = prev.periodList; val cP = c.periodList
+            // 同名但 老师/周次/节次 任一不同 = 真是两门课（单双周同名不同师、同格同名不同周次），保留两条
+            if ((pT.isNotEmpty() && cT.isNotEmpty() && pT != cT) ||
+                (pW.isNotEmpty() && cW.isNotEmpty() && pW != cW) ||
+                (pP != null && cP != null && (pP.first() != cP.first() || pP.last() != cP.last()))) {
+                val k2 = c.name + "#" + merged.size
+                merged[k2] = c; periods[k2] = p
+                continue
+            }
+            if (prev.teachers.isEmpty()) prev.teachers.addAll(c.teachers)
+            if (prev.rooms.isEmpty()) prev.rooms.addAll(c.rooms)
+            if (prev.building.isEmpty()) prev.building = c.building
+            if (prev.weeks.isEmpty()) prev.weeks = c.weeks
+            if (prev.periodList == null) prev.periodList = c.periodList
+            if (periods[c.name]?.first == null) periods[c.name] = p
+        }
+        // 合并后重算字符串字段（title 路径的字段在集合里）；按行回退路径的字段
+        // 直接在字符串上（集合为空），保留原值不动
+        for (g in merged.values) {
+            if (g.teachers.isNotEmpty()) g.teacher = g.teachers.joinToString(",")
+            if (g.rooms.isNotEmpty() || g.building.isNotEmpty()) {
+                g.location = normalizeLocation(g.building, g.rooms.joinToString("；"))
+            }
+        }
+        return merged.map { (k, c) -> c to (periods[k] ?: (null to null)) }
     }
 
     /**

@@ -18,7 +18,7 @@ class ParserLivePageTest {
     @Test
     fun livePageParsesAllCoursesWithTeachers() {
         val r = JwxtParser.parseHtml(html())!!
-        assertEquals("活页应解析出 21 门课", 21, r.courses.size)
+        assertEquals("活页应解析出 23 门课（含老解析丢掉的 2 门补课）", 23, r.courses.size)
         val emptyTeacher = r.courses.filter { it.teacher.isBlank() }
         assertTrue(
             "不该有老师为空的课（空的是：${emptyTeacher.map { it.name }}）",

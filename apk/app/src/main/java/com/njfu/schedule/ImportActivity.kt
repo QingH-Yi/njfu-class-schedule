@@ -158,7 +158,7 @@ class ImportActivity : ComponentActivity() {
         grabbingCredits = true
         status.text = "已导入 $lastAdded 门课，正在爬学分…"
         val js = loadKbJs(res.term.ifEmpty { Repository.loadSchedule().term })
-        for (d in longArrayOf(500, 3000, 5500)) {
+        for (d in longArrayOf(300, 900, 1500)) {
             webView.postDelayed({
                 try { webView.evaluateJavascript(js, null) } catch (_: Exception) {}
             }, d)
@@ -175,7 +175,7 @@ class ImportActivity : ComponentActivity() {
                 // 登录提交后主动跳课表页：CAS 默认落点可能是个人中心门户（那里抓不到标准课表格）
                 webView.postDelayed({
                     try { webView.loadUrl(Repository.jwUrl.ifEmpty { DEFAULT_URL }) } catch (_: Exception) {}
-                }, 2500)
+                }, 1500)
             }
         }
     }
@@ -187,8 +187,9 @@ class ImportActivity : ComponentActivity() {
         grabbingCredits = false
         importFinished = false
         lastAdded = 0
-        // 抓 3 轮：每轮对同一页面重新爬取（查缺补漏，某轮漏的课由其它轮补上），最后合并去重入库
-        for (d in longArrayOf(0, 1500, 3000)) {
+        // 抓 3 轮：每轮对同一页面重新爬取（查缺补漏，某轮漏的课由其它轮补上），最后合并去重入库。
+        // 页面此刻已加载完，三轮连续快抓即可（总耗时 1.2s，不再白等 3 秒）
+        for (d in longArrayOf(0, 600, 1200)) {
             webView.postDelayed({
                 try { webView.evaluateJavascript(MainActivity.GRAB_JS, null) } catch (_: Exception) {}
             }, d)

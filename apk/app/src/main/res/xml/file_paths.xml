@@ -1,0 +1,7 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 导出的课表文件（csv/xlsx/ics）先落在 cacheDir/exports/ 下，再通过 ACTION_SEND 分享 -->
+    <cache-path
+        name="exports"
+        path="exports/" />
+</paths>

@@ -26,6 +26,17 @@
             android:name=".ImportActivity"
             android:exported="false"
             android:label="导入课表" />
+
+        <!-- 导出的课表文件要先写到应用私有目录再交给 QQ/微信，需要 FileProvider 授权 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

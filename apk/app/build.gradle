@@ -12,8 +12,8 @@ android {
         applicationId "com.njfu.schedule"
         minSdk 26
         targetSdk 35
-        versionCode 40
-        versionName "2.5"
+        versionCode 41
+        versionName "2.6"
         // 只保留中英文资源，去掉 AndroidX 自带的其他语言，减小体积
         resConfigs "zh", "en"
     }
@@ -64,6 +64,20 @@ android {
     testOptions {
         unitTests {
             includeAndroidResources = true
+            // 沙箱/受限环境下 USERPROFILE 可能不可写，Robolectric 默认会把
+            // robolectric-download-lock 和 android-all 缓存写到 C:\Users\<user>\，
+            // 那里失败会让所有 Robolectric 测试报 Couldn't create lock file。
+            // 指到项目内的 build 目录，谁都能写。
+            all {
+                it.systemProperty 'robolectric.dependency.dir',
+                        new File(rootProject.projectDir, 'app/build/robolectric-deps').absolutePath
+                it.systemProperty 'robolectric-dependency-lock',
+                        new File(rootProject.projectDir, 'app/build/robolectric-deps/.lock').absolutePath
+                it.systemProperty 'user.home',
+                        new File(rootProject.projectDir, 'app/build/robolectric-home').absolutePath
+                it.jvmArgs '-Djava.io.tmpdir=' +
+                        new File(rootProject.projectDir, 'app/build/tmp-test').absolutePath
+            }
         }
     }
     packaging {

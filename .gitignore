@@ -31,3 +31,16 @@ apk/njfu_schedule.xml
 apk/prefs_schedule.json
 apk/app/src/test/resources/kb_list_live.html
 apk/app/src/test/resources/kb_loadkb_live.html
+
+# 调研/构建临时目录（本机沙箱专用，不入库）
+_research/
+_tmp_gh/
+_tmp_gradle/
+_tmp_img/
+_tmp_ah/
+_tmp_avd/
+_tmp_wk/
+_shots/
+
+# 早期从 GitHub 克隆的旧副本（与仓库本身重复）
+class schedule-github/

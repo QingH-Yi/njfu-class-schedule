@@ -29,6 +29,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -1830,6 +1831,11 @@ fun SettingsDialog(
     val annScope = rememberCoroutineScope()
     var annLoading by remember { mutableStateOf(false) }
     var annInfo by remember { mutableStateOf<Triple<String, String, String>?>(null) }
+    // WakeUp 分享口令：生成（上传）与导入（下载）
+    var wakeLoading by remember { mutableStateOf(false) }
+    var wakeCodeDialog by remember { mutableStateOf<String?>(null) }
+    var wakeImportDialog by remember { mutableStateOf(false) }
+    val wakeScope = rememberCoroutineScope()
 
     // 选图器：系统图片选择器（无需存储权限，返回可读 content:// URI）
     val bgPicker = rememberLauncherForActivityResult(
@@ -1873,12 +1879,96 @@ fun SettingsDialog(
     }
 
     // 导出 WakeUp CSV：国内课表 App 生态标准交换格式，可导入 WakeUp 课表等 App
+    // 导出后直接拉起系统分享面板（QQ/微信/邮件/存到文件），不用再让用户选保存位置
     val csvExportLauncher = textExportLauncher(exportScope, context, "text/csv") {
         WakeCsv.buildCsv(Repository.loadSchedule())
     }
     val icsExportLauncher = textExportLauncher(exportScope, context, "text/calendar") {
         val s = Repository.loadSchedule()
         IcsExport.buildIcs(s, s.campus)
+    }
+
+    /** 导出 CSV 并直接分享：写 cache/exports/ 下的文件 → ACTION_SEND → 系统面板 */
+    fun shareCsvNow() {
+        exportScope.launch {
+            val res = withContext(Dispatchers.IO) {
+                runCatching {
+                    val s = Repository.loadSchedule()
+                    val name = "南林课程表-${s.term.ifBlank { "未命名学期" }}.csv"
+                    ShareUtil.writeTextFile(context, name, WakeCsv.buildCsv(s)) to name
+                }.getOrNull()
+            }
+            if (res == null) {
+                Toast.makeText(context, "生成 CSV 失败，请重试", Toast.LENGTH_LONG).show()
+                return@launch
+            }
+            ShareUtil.shareFile(
+                context, res.first, "text/csv",
+                subject = res.second,
+                text = "南林课程表（WakeUp CSV，可在 WakeUp 课表里「从 Excel 导入」）",
+                chooserTitle = "发送课程表到"
+            )
+        }
+    }
+
+    /**
+     * 分享 WakeUp 备份文件（.wakeup_schedule）。
+     *
+     * 这是比「分享口令」更稳的路子：文件里就是课表本体，发到 QQ / 微信后，
+     * 对方点「用其他应用打开」选 WakeUp 课程表即可导入，不需要联网，
+     * 也没有口令 30 分钟过期的问题。
+     */
+    fun shareWakeUpFile() {
+        exportScope.launch {
+            val res = withContext(Dispatchers.IO) {
+                runCatching {
+                    val s = Repository.loadSchedule()
+                    require(s.courses.any { it.day in 1..7 }) { "empty" }
+                    val base = "南林课程表-${s.term.ifBlank { "未命名学期" }}"
+                    val name = "$base.${WakeUpShare.FILE_EXT}"
+                    ShareUtil.writeTextFile(context, name, WakeUpShare.buildScheduleFile(s)) to name
+                }
+            }
+            val ok = res.getOrNull()
+            val err = res.exceptionOrNull()
+            when {
+                ok == null && err?.message == "empty" -> Toast.makeText(
+                    context, "课表里没有可分享的课程（整周实习在 WakeUp 里没有格子）", Toast.LENGTH_LONG
+                ).show()
+                ok == null -> Toast.makeText(context, "生成备份文件失败，请重试", Toast.LENGTH_LONG).show()
+                else -> ShareUtil.shareFile(
+                    context, ok.first, "application/octet-stream",
+                    subject = ok.second,
+                    text = "南林课程表备份，用「WakeUp课程表」打开即可导入",
+                    chooserTitle = "发送课表备份到"
+                )
+            }
+        }
+    }
+
+    /** 生成 WakeUp 分享口令（把课表传到 WakeUp 服务器换成 32 位口令） */
+    fun generateWakeUpCode() {
+        if (wakeLoading) return
+        wakeLoading = true
+        wakeScope.launch {
+            val r = withContext(Dispatchers.IO) {
+                runCatching {
+                    val s = Repository.loadSchedule()
+                    if (s.courses.none { it.day in 1..7 }) null
+                    else WakeUpShare.upload(WakeUpShare.buildScheduleFile(s))
+                }
+            }
+            wakeLoading = false
+            val key = r.getOrNull()
+            val err = r.exceptionOrNull()
+            when {
+                err != null -> Toast.makeText(context, "生成失败：${err.message}", Toast.LENGTH_LONG).show()
+                key == null -> Toast.makeText(
+                    context, "课表里没有可分享的课程（整周实习在 WakeUp 里没有格子）", Toast.LENGTH_LONG
+                ).show()
+                else -> wakeCodeDialog = key
+            }
+        }
     }
 
     // 导入 WakeUp CSV：从其它课表 App 迁移（同名同位置去重合并，手动加的课重抓时保留）
@@ -2137,12 +2227,28 @@ fun SettingsDialog(
                     ) { SettingsChevron(th) }
                     SettingsDivider(th)
                     SettingsRow(
-                        th, "📋", SETTING_TINTS[1], "导出 WakeUp CSV",
-                        subtitle = "课表 App 通用交换格式，可导入 WakeUp 课表等 App（一门课一行；没有的老师/教室写「无」；整周实习不导出）",
-                        onClick = {
-                            val s = Repository.loadSchedule()
-                            csvExportLauncher.launch("南林课程表-${s.term.ifBlank { "未命名学期" }}.csv")
-                        }
+                        th, "📤", SETTING_TINTS[3], "分享 WakeUp CSV 给好友",
+                        subtitle = "生成 .csv 文件后立刻弹出分享面板，直接选 QQ / 微信 / 邮件发给同学（对方在 WakeUp 里「从 Excel 导入」即可）",
+                        onClick = { shareCsvNow() }
+                    ) { SettingsChevron(th) }
+                    SettingsDivider(th)
+                    SettingsRow(
+                        th, "🔗", SETTING_TINTS[4],
+                        if (wakeLoading) "正在生成分享口令…" else "生成 WakeUp 分享口令",
+                        subtitle = "不用发文件：一键得到一串口令发给好友，对方在 WakeUp 里「从分享口令导入」粘贴即可（30 分钟内有效）",
+                        onClick = { generateWakeUpCode() }
+                    ) { SettingsChevron(th) }
+                    SettingsDivider(th)
+                    SettingsRow(
+                        th, "💾", SETTING_TINTS[1], "分享 WakeUp 备份文件",
+                        subtitle = "最稳的方式：生成 .wakeup_schedule 文件，发到 QQ / 微信后对方选「用其他应用打开」→ WakeUp 课程表即导入，不过期、不用联网",
+                        onClick = { shareWakeUpFile() }
+                    ) { SettingsChevron(th) }
+                    SettingsDivider(th)
+                    SettingsRow(
+                        th, "🔑", SETTING_TINTS[2], "从 WakeUp 分享口令导入",
+                        subtitle = "好友发来一串 WakeUp 分享口令，粘贴进来就能把对方的课表导进本 App",
+                        onClick = { wakeImportDialog = true }
                     ) { SettingsChevron(th) }
                     SettingsDivider(th)
                     SettingsRow(
@@ -2150,6 +2256,15 @@ fun SettingsDialog(
                         subtitle = "按周次和三校区作息展开成日历事件，导入系统日历后自动按周显示上课时间（整周实习无具体时刻，不含）",
                         onClick = {
                             icsExportLauncher.launch(IcsExport.suggestedFileName(Repository.loadSchedule()))
+                        }
+                    ) { SettingsChevron(th) }
+                    SettingsDivider(th)
+                    SettingsRow(
+                        th, "📋", SETTING_TINTS[1], "导出 WakeUp CSV（存到文件）",
+                        subtitle = "课表 App 通用交换格式，自己选保存位置（一门课一行；没有的老师/教室写「无」；整周实习不导出）",
+                        onClick = {
+                            val s = Repository.loadSchedule()
+                            csvExportLauncher.launch("南林课程表-${s.term.ifBlank { "未命名学期" }}.csv")
                         }
                     ) { SettingsChevron(th) }
                     SettingsDivider(th)
@@ -2232,16 +2347,184 @@ fun SettingsDialog(
             annInfo?.let { (v, url, body) ->
                 AnnouncementDialog(version = v, body = body, url = url, th = th, onDone = { annInfo = null })
             }
+
+            // 生成好的 WakeUp 分享口令：复制 / 直接发给 QQ 微信
+            wakeCodeDialog?.let { key ->
+                WakeUpCodeDialog(
+                    key = key, th = th,
+                    onCopy = {
+                        ShareUtil.copy(context, WakeUpShare.shareMessage(key))
+                        Toast.makeText(context, "已复制，粘贴给好友就行", Toast.LENGTH_SHORT).show()
+                    },
+                    onShare = {
+                        ShareUtil.shareText(
+                            context, WakeUpShare.shareMessage(key),
+                            subject = "WakeUp 课表分享", chooserTitle = "发送课表口令到"
+                        )
+                    },
+                    onDone = { wakeCodeDialog = null }
+                )
+            }
+
+            // 从好友的口令导入课表
+            if (wakeImportDialog) {
+                WakeUpImportDialog(
+                    th = th,
+                    onImported = { added, skipped ->
+                        // 课表已经写盘；设置弹窗关闭时主界面会重新 loadSchedule，这里只需回报结果
+                        wakeImportDialog = false
+                        Toast.makeText(
+                            context, "已导入 $added 门课（重复位置跳过），无效 $skipped 条；关掉设置即可看到", Toast.LENGTH_LONG
+                        ).show()
+                    },
+                    onDone = { wakeImportDialog = false }
+                )
+            }
         }
     }
 }
 
 
 /**
- * 文本类导出（WakeUp CSV / 日历 ICS）共用的 CreateDocument 启动器：
- * 用户选好保存位置后，在 IO 线程生成文本并写 UTF-8 字节，完成后 Toast。
+ * 生成好的 WakeUp 分享口令：大号等宽显示 32 位口令 + 一键复制 / 直接分享。
+ * 口令只是 WakeUp 服务器上的一个 shareId，30 分钟后失效，所以这里明确提示。
  */
 @Composable
+fun WakeUpCodeDialog(
+    key: String,
+    th: AppColors,
+    onCopy: () -> Unit,
+    onShare: () -> Unit,
+    onDone: () -> Unit
+) {
+    MacDialog(color = th.surface, onDismissRequest = onDone) { close ->
+        Column(Modifier.fillMaxWidth()) {
+            DialogHeader(th, "WakeUp 分享口令", "🔗")
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "把它发给好友，对方在 WakeUp 课表里点「从分享口令导入」粘贴即可。30 分钟内有效。",
+                fontSize = 12.sp, lineHeight = 17.sp, color = th.textSecondary
+            )
+            Spacer(Modifier.height(12.dp))
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = th.bg.copy(alpha = 0.7f),
+                border = BorderStroke(1.dp, th.divider),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    key, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = th.textPrimary,
+                    lineHeight = 22.sp, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp, horizontal = 10.dp)
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "整段消息已经一起复制，好友不装 WakeUp 也能看懂怎么用。",
+                fontSize = 11.sp, color = th.textSecondary
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = { close() }) { Text("关闭", color = th.textSecondary) }
+                Spacer(Modifier.width(4.dp))
+                OutlinedButton(shape = RoundedCornerShape(12.dp), onClick = onCopy) { Text("复制") }
+                Spacer(Modifier.width(6.dp))
+                Button(shape = RoundedCornerShape(12.dp), onClick = onShare) { Text("发给好友") }
+            }
+        }
+    }
+}
+
+/**
+ * 从 WakeUp 分享口令导入：粘贴框 + 「导入」按钮。
+ * 好友转发的整段消息也能直接粘（内部会挑出 32 位口令）。
+ */
+@Composable
+fun WakeUpImportDialog(
+    th: AppColors,
+    onImported: (added: Int, skipped: Int) -> Unit,
+    onDone: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var input by remember { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    MacDialog(color = th.surface, onDismissRequest = { if (!busy) onDone() }) { close ->
+        Column(Modifier.fillMaxWidth()) {
+            DialogHeader(th, "从 WakeUp 口令导入", "🔑")
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "把好友发来的分享口令（整段消息也行）粘到下面，点「导入」。",
+                fontSize = 12.sp, lineHeight = 17.sp, color = th.textSecondary
+            )
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = input,
+                onValueChange = { input = it; error = null },
+                label = { Text("分享口令 / 整段分享消息", fontSize = 12.sp) },
+                minLines = 3,
+                maxLines = 5,
+                shape = RoundedCornerShape(12.dp),
+                textStyle = androidx.compose.material3.LocalTextStyle.current.copy(
+                    fontSize = 13.sp, color = th.textPrimary
+                ),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = th.accent,
+                    unfocusedBorderColor = th.divider,
+                    focusedLabelColor = th.accent,
+                    unfocusedLabelColor = th.textSecondary,
+                    cursorColor = th.accent
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+            error?.let {
+                Spacer(Modifier.height(6.dp))
+                Text(it, fontSize = 12.sp, color = androidx.compose.ui.graphics.Color(0xFFD63A2F))
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = { close() }, enabled = !busy) { Text("取消", color = th.textSecondary) }
+                Spacer(Modifier.width(6.dp))
+                Button(
+                    shape = RoundedCornerShape(12.dp),
+                    enabled = !busy && input.isNotBlank(),
+                    onClick = {
+                        if (busy) return@Button
+                        busy = true
+                        error = null
+                        scope.launch {
+                            val r = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    val text = WakeUpShare.download(input)
+                                    val (courses, skipped) = WakeUpShare.parseScheduleFile(text)
+                                    if (courses.isEmpty()) null
+                                    else Pair(Repository.addCourses(courses, ""), skipped)
+                                }
+                            }
+                            busy = false
+                            val v = r.getOrNull()
+                            val e = r.exceptionOrNull()
+                            if (e != null) {
+                                error = e.message ?: "导入失败，请检查口令"
+                            } else if (v == null) {
+                                error = "没解析到课程：这份口令可能不是课表"
+                            } else {
+                                onImported(v.first, v.second)
+                            }
+                        }
+                    }
+                ) { Text(if (busy) "导入中…" else "导入") }
+            }
+        }
+    }
+}
+
+/**
+ * 文本类导出（WakeUp CSV / 日历 ICS）共用的 CreateDocument 启动器：
+ * 用户选好保存位置后，在 IO 线程生成文本并写 UTF-8 字节，完成后 Toast。
+ */@Composable
 private fun textExportLauncher(
     scope: CoroutineScope,
     context: android.content.Context,

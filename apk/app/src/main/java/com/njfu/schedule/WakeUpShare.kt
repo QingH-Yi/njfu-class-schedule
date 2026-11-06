@@ -5,25 +5,16 @@ import com.google.gson.GsonBuilder
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import java.io.IOException
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
 import java.util.UUID
 
 /**
- * WakeUp 课程表「分享口令」互通。
+ * WakeUp 课程表「导出 / 导入文件」格式（wakeup_schedule 文本）的读写。
  *
- * 口令本质：一串 32 位十六进制的 key，指向 WakeUp 服务器（i.wakeup.fun）上存的一份
- * 「wakeup_schedule」文本（课表本体），有效期约 30 分钟。App 里「从分享口令导入」是把
- * 那条消息整段粘进文本框，由 App 自己从中取出 key。
- *
- * 两个接口（2025-11 实测可用，纯明文表单，不需要 antispam 签名 / 不需要 native DES）：
- *   POST https://i.wakeup.fun/share_schedule        schedule=<wakeup_schedule 全文>
- *        → {"status":1,"message":"success","data":"<32 位 hex key>"}
- *   GET  https://i.wakeup.fun/share_schedule/get?key=<32 位 hex>
- *        → {"status":1,"data":"<wakeup_schedule 全文>"}
- *   参数名只能是 key；key 长度不是 32 时服务端回 status 5000004「当前版本过低，请升级」。
+ * 注：本工具类原本还实现了「分享口令」（把课表上传到 i.wakeup.fun 换 32 位 key、
+ * 好友凭 key 下载）。实测该链路只能和服务器完成存取往返，但 WakeUp 客户端读口令
+ * 走的是需要 antispam 签名 + native DES 的新版加密接口，明文接口取回的内容它不认，
+ * 于是 v2.6 起整块移除，只保留文件（.wakeup_schedule）与 CSV 两条格式。
+ * 具体原因见 CHANGELOG v2.6。
  *
  * wakeup_schedule 文件：6 行、\n 分隔
  *   0 表配置  {"courseLen":50,"id":1,"name":..,"sameBreakLen":false,"sameLen":true,"theBreakLen":10}
@@ -37,13 +28,7 @@ import java.util.UUID
  */
 object WakeUpShare {
 
-    /** WakeUp 服务器地址（明文接口，仅支持 HTTPS） */
-    const val HOST = "https://i.wakeup.fun"
-
-    /**
-     * 导出文件的扩展名。WakeUp 的「导出文件」写出的就是这种文件，实测它就是
-     * wakeup_schedule 文本。发给好友后用 WakeUp 打开即可导入，不依赖口令和联网。
-     */
+    /** 导出文件的扩展名（WakeUp「导出文件」写出的就是这种文件） */
     const val FILE_EXT = "wakeup_schedule"
 
     /** 导出时最多保留的周数，与 WakeUp 默认 maxWeek 一致 */
@@ -165,14 +150,6 @@ object WakeUpShare {
         return sb.toString()
     }
 
-    /**
-     * 生成要发给好友的整段口令文案（和 WakeUp 自己复制出来的措辞一致，对方直接粘贴即可）。
-     */
-    fun shareMessage(key: String): String =
-        "这是来自「WakeUp课程表」的课表分享，30分钟内有效哦，如果失效请朋友再分享一遍叭。" +
-            "为了保护隐私我们选择不监听你的剪贴板，请复制这条消息后，打开App的主界面，" +
-            "右上角第二个按钮 -> 从分享口令导入，按操作提示即可完成导入~分享口令为「$key」"
-
     // ---------------- wakeup_schedule 文本 → 本 App 课表 ----------------
 
     /**
@@ -248,101 +225,6 @@ object WakeUpShare {
             else prev.copy(weeks = (prev.weeks + c.weeks).distinct().sorted())
         }
         return merged.values.toList()
-    }
-
-    // ---------------- 网络：上传 / 下载 ----------------
-
-    /** 上传失败原因 */
-    class ShareException(message: String) : IOException(message)
-
-    /**
-     * 把课表文本传到 WakeUp 服务器，返回 32 位 hex 口令。
-     * @throws ShareException 网络或服务端出错
-     */
-    fun upload(scheduleFile: String): String {
-        val body = "schedule=" + URLEncoder.encode(scheduleFile, "UTF-8")
-        val resp = post("$HOST/share_schedule", body)
-        val obj = JsonParser.parseString(resp).asJsonObject
-        val status = obj.get("status")?.takeIf { it.isJsonPrimitive }?.asInt ?: -1
-        if (status != 1) {
-            throw ShareException(obj.get("message")?.takeIf { it.isJsonPrimitive }?.asString ?: "上传失败")
-        }
-        val key = obj.get("data")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
-        if (key.length != 32) throw ShareException("服务端返回的口令不正确（$key）")
-        return key
-    }
-
-    /**
-     * 用口令换回课表文本。整段分享消息也能直接传进来（内部取出 32 位 key）。
-     * @throws ShareException 口令失效（过期 / 不存在）或网络出错
-     */
-    fun download(text: String): String {
-        val key = extractKey(text) ?: throw ShareException("没有找到有效的分享口令（应当是一串 32 位字符）")
-        val resp = get("$HOST/share_schedule/get?key=$key")
-        val obj = JsonParser.parseString(resp).asJsonObject
-        val status = obj.get("status")?.takeIf { it.isJsonPrimitive }?.asInt ?: -1
-        if (status != 1) {
-            val msg = obj.get("message")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
-            throw ShareException(
-                when {
-                    status == 5000004 -> "口令不正确哦，请检查是否复制完整"
-                    msg.contains("版本") -> "口令可能已过期（有效期 30 分钟），让对方重新分享一次"
-                    msg.isNotBlank() -> msg
-                    else -> "数据读取失败，可能是分享口令已经过期了哦"
-                }
-            )
-        }
-        return obj.get("data")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
-    }
-
-    /** 从一段文本里挑出 32 位 hex 口令；支持整段 WakeUp 分享消息、纯口令、带空白的粘贴 */
-    fun extractKey(text: String): String? {
-        // 优先取「」里的内容（WakeUp 分享消息的口令就在里面）
-        Regex("「([0-9a-fA-F]{32})」").find(text)?.let { return it.groupValues[1].lowercase() }
-        Regex("[0-9a-fA-F]{32}").find(text)?.let { return it.value.lowercase() }
-        return null
-    }
-
-    private fun post(url: String, body: String): String {
-        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 15000
-            readTimeout = 20000
-            doOutput = true
-            setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-            setRequestProperty("User-Agent", "okhttp/3.14.9")
-            setRequestProperty("version", "180")
-        }
-        return try {
-            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
-            readOrThrow(conn)
-        } finally {
-            conn.disconnect()
-        }
-    }
-
-    private fun get(url: String): String {
-        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 15000
-            readTimeout = 20000
-            setRequestProperty("User-Agent", "okhttp/3.14.9")
-            setRequestProperty("version", "180")
-        }
-        return try {
-            readOrThrow(conn)
-        } finally {
-            conn.disconnect()
-        }
-    }
-
-    private fun readOrThrow(conn: HttpURLConnection): String {
-        val code = conn.responseCode
-        val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-            ?: throw ShareException("服务器无响应（HTTP $code）")
-        val text = stream.use { it.readBytes().toString(Charsets.UTF_8) }
-        if (code !in 200..299) throw ShareException("服务器出错（HTTP $code）")
-        return text
     }
 
     // ---------------- 小工具 ----------------

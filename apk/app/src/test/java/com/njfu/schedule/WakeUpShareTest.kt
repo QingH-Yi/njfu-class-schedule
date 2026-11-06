@@ -143,29 +143,6 @@ class WakeUpShareTest {
     }
 
     @Test
-    fun extractKeyFromWholeShareMessage() {
-        val key = "fa506553b26d4b37b4dc4111a2454976"
-        val msg = WakeUpShare.shareMessage(key)
-        assertEquals(key, WakeUpShare.extractKey(msg))
-        assertEquals(key, WakeUpShare.extractKey(key))
-        assertEquals(key, WakeUpShare.extractKey("  $key\n"))
-        // 大写也能认，统一小写
-        assertEquals(key, WakeUpShare.extractKey(key.uppercase()))
-        // 整段消息里只挑口令，不把别的东西当口令
-        assertEquals(key, WakeUpShare.extractKey("随便一些说明\n${WakeUpShare.shareMessage(key)}\n末尾"))
-        assertEquals(null, WakeUpShare.extractKey("没有口令"))
-        assertEquals(null, WakeUpShare.extractKey(""))
-    }
-
-    @Test
-    fun shareMessageMentionsExpiryAndImportPath() {
-        val msg = WakeUpShare.shareMessage("0123456789abcdef0123456789abcdef")
-        assertTrue(msg.contains("30分钟"))
-        assertTrue(msg.contains("从分享口令导入"))
-        assertTrue(msg.contains("「0123456789abcdef0123456789abcdef」"))
-    }
-
-    @Test
     fun wakeDateStripsLeadingZeros() {
         assertEquals("2026-8-31", WakeUpShare.wakeDate("2026-08-31"))
         assertEquals("2026-12-1", WakeUpShare.wakeDate("2026-12-01"))

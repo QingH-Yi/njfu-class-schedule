@@ -41,3 +41,16 @@ class schedule-github/
 
 # 待上传中转
 待上传/
+
+# 本地文档 / 旧版本（不上传仓库）
+交接手册.md
+数据手册.md
+文档-*.md
+旧文档归档-*.zip
+推送提示词*.md
+.zcodeignore
+web/
+electron/
+docs/
+releases/
+screenshots/

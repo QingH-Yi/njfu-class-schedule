@@ -56,13 +56,13 @@ fun weekLabel(weeks: List<Int>): String = formatWeeks(weeks, suffix = "周", emp
 /** 编辑框用："1-16,18"；空="" */
 fun weeksToText(weeks: List<Int>): String = formatWeeks(weeks)
 
-/** 周次文本里的数字/区间（预编译，解析器和 CSV 导入共用热点） */
+/** 周次文本里的数字/区间（预编译，解析器热点路径） */
 private val WEEK_RANGE_RE = Regex("(\\d+)\\s*[-~—–]\\s*(\\d+)|(\\d+)")
 
 /**
  * 周次文本解析（唯一入口，编辑弹窗与教务解析器共用）：
  * "1-16,18" / "3-8,10-13" / "单周" "双周" 修饰都支持；中文顿号"、"分隔与 "x-x单/x-x双"
- * （WakeUp CSV 格式）同样兼容；1..53 之外的数字丢弃。
+ * 同样兼容；1..53 之外的数字丢弃。
  */
 fun parseWeekNumbers(text: String, oddOnly: Boolean = false, evenOnly: Boolean = false): List<Int> {
     val out = sortedSetOf<Int>()
@@ -95,7 +95,13 @@ fun autoLoginJs(user: String, pass: String): String =
             "var pw=document.querySelector('input[type=password]');" +
             "if(!u||!pw)return 'nofield';" +
             "if(u.value&&pw.value)return 'filled';" +
-            "u.value='${jsStr(user)}';pw.value='${jsStr(pass)}';" +
+                        // 框架渲染的输入框（React/Vue 受控组件）需要用原生 value setter 赋值
+            // 再补发 input 事件，否则框架内部状态仍是空、提交会被当没填
+            "var setV=Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value').set;" +
+            "setV.call(u,'${jsStr(user)}');setV.call(pw,'${jsStr(pass)}');" +
+            "['input','change'].forEach(function(t){" +
+            "try{u.dispatchEvent(new Event(t,{bubbles:true}));pw.dispatchEvent(new Event(t,{bubbles:true}));}catch(e){}" +
+            "});" +
             "var b=document.querySelector('button[type=submit],input[type=submit],#loginBtn,.loginBtn');" +
             "if(b){b.click();return 'submitted';}return 'nofield';" +
             "}catch(e){return 'err';}})();"
@@ -121,11 +127,25 @@ class RoundCollector<T>(private val count: Int = 3) {
  * 再 fetch 个人中心课表（mainV_index_loadkb.htmlx，悬停课程卡片显示的浮层
  * 就是其中 div.item-box，内含「学分：X」），把整页 HTML 回传 AndroidGrab.receiveKb。
  * 手动导入（ImportActivity）与后台自动更新（MainActivity）共用。
+ *
+ * 提速：GUID 每次调用只取一次（原来三轮各取一次，多了两个重复请求），
+ * 三轮课表抓取在脚本内部错开 0/400/800ms 发出，调用方 evaluate 一次即可。
+ * 回传次数仍是 3 次，RoundCollector 的三轮语义不变。
  */
 fun loadKbJs(term: String): String {
     val t = term.replace("\\", "\\\\").replace("'", "\\'")
     return """(function(){
 function done(h){try{AndroidGrab.receiveKb(h||'')}catch(e){}}
+function fetchKb(g){
+ var x=new XMLHttpRequest();
+ var term='$t';
+ var q='rq=all&sjmsValue='+g+(term?('&xnxqid='+encodeURIComponent(term)):'')+'&xswk=false';
+ x.open('GET','/jsxsd/framework/mainV_index_loadkb.htmlx?'+q,true);
+ x.timeout=10000;
+ x.onload=function(){done(x.responseText||'')};
+ x.onerror=function(){done('')};x.ontimeout=function(){done('')};
+ x.send();
+}
 function guid(cb){
  var x=new XMLHttpRequest();
  x.open('GET','/jsxsd/framework/xsMainV_new.htmlx?t1=1',true);
@@ -142,14 +162,9 @@ function guid(cb){
 }
 guid(function(g){
  if(!g){done('');return;}
- var x=new XMLHttpRequest();
- var term='$t';
- var q='rq=all&sjmsValue='+g+(term?('&xnxqid='+encodeURIComponent(term)):'')+'&xswk=false';
- x.open('GET','/jsxsd/framework/mainV_index_loadkb.htmlx?'+q,true);
- x.timeout=10000;
- x.onload=function(){done(x.responseText||'')};
- x.onerror=function(){done('')};x.ontimeout=function(){done('')};
- x.send();
+ fetchKb(g);
+ setTimeout(function(){fetchKb(g)},400);
+ setTimeout(function(){fetchKb(g)},800);
 });
 })();"""
 }

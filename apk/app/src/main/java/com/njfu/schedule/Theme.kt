@@ -116,11 +116,63 @@ private val MATCHA = listOf(
     Color(0xFFD2E8BE) to Color(0xFF53782E)
 )
 
-val PALETTE_NAMES = listOf("马卡龙", "海盐", "樱花", "抹茶")
-val PALETTES = listOf(MACARON, SEA, SAKURA, MATCHA)
-private val PALETTE_ACCENTS = listOf(
-    Color(0xFFE8919E), Color(0xFF2E8FA8), Color(0xFFB4548A), Color(0xFF5E8A3A)
+
+// 薰衣草 (底色, 深文字)
+private val LAVENDER = listOf(
+    Color(0xFFE4DAF5) to Color(0xFF6B4EA0),
+    Color(0xFFD8CDE8) to Color(0xFF5E4A96),
+    Color(0xFFE0D0F0) to Color(0xFF7558A8),
+    Color(0xFFD5D0F0) to Color(0xFF5E58A0),
+    Color(0xFFE8D8F0) to Color(0xFF7A58A8),
+    Color(0xFFD0C8E8) to Color(0xFF58509E),
+    Color(0xFFE0D8F5) to Color(0xFF6E58A8),
+    Color(0xFFD8D0E8) to Color(0xFF5E568E),
+    Color(0xFFE4DCF0) to Color(0xFF7260A0),
+    Color(0xFFDCC8E8) to Color(0xFF6E4E96)
 )
+// 珊瑚 (底色, 深文字)
+private val CORAL = listOf(
+    Color(0xFFFFE0D6) to Color(0xFFC4563E),
+    Color(0xFFFFE8D0) to Color(0xFFB4663E),
+    Color(0xFFFFDCC8) to Color(0xFFD4693B),
+    Color(0xFFFFE4D0) to Color(0xFFC4603E),
+    Color(0xFFFFD6CC) to Color(0xFFCC5038),
+    Color(0xFFFFE8D6) to Color(0xFFB46A46),
+    Color(0xFFFFE0CC) to Color(0xFFC4623E),
+    Color(0xFFFFE5D5) to Color(0xFFCE6A42),
+    Color(0xFFFFDAC8) to Color(0xFFC0583E),
+    Color(0xFFFFE2D2) to Color(0xFFB4603E)
+)
+
+val PALETTE_NAMES = listOf("马卡龙", "海盐", "樱花", "抹茶", "薰衣草", "珊瑚")
+val PALETTES = listOf(MACARON, SEA, SAKURA, MATCHA, LAVENDER, CORAL)
+private val PALETTE_ACCENTS = listOf(
+    Color(0xFFE8919E), Color(0xFF2E8FA8), Color(0xFFB4548A), Color(0xFF5E8A3A),
+    Color(0xFF7E5EA6), Color(0xFFD4735E)
+)
+
+/** 课程自定义颜色的可选色盘（12 个色相，用于详情弹窗的调色盘） */
+val COURSE_COLOR_HUES = listOf(
+    0f,    // 红
+    30f,   // 橙
+    55f,   // 黄
+    90f,   // 绿
+    150f,  // 薄荷
+    180f,  // 青
+    210f,  // 蓝
+    255f,  // 靛蓝
+    280f,  // 紫
+    315f,  // 粉紫
+    340f,  // 粉
+    -1f    // 跟随色系（重置）
+)
+
+/** 由色相生成课程卡片颜色（底色, 深文字）——用于课程自定义颜色 */
+fun cardColorFromHue(hue: Float, dark: Boolean): Pair<Color, Color> {
+    val h = ((hue % 360) + 360) % 360
+    return if (dark) Color.hsl(h, 0.35f, 0.32f) to Color.hsl(h, 0.55f, 0.82f)
+    else Color.hsl(h, 0.50f, 0.86f) to Color.hsl(h, 0.50f, 0.33f)
+}
 
 /** 由色相生成一套自定义的柔和配色（自定义颜色用） */
 fun paletteFromHue(hue: Float): List<Pair<Color, Color>> =

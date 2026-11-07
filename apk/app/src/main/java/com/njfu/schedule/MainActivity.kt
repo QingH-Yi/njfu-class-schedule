@@ -1,6 +1,7 @@
 package com.njfu.schedule
 
 import android.annotation.SuppressLint
+import android.util.Log
 import android.app.DatePickerDialog
 import android.content.Intent
 import android.net.Uri
@@ -125,12 +126,56 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 后台无界面 WebView 抓取更新：加载教务主页（含课表预览），
+     * 后台更新：优先纯 HTTP 抓取（2~3 秒），失败（验证码/网络/教务改版）自动回退
+     * 到 WebView 抓取。成功才覆盖本地课表，失败保持原样。
+     */
+    private fun runBackgroundUpdate() {
+        // ---- 路径一：纯 HTTP（有保存的账号密码才能走 CAS 密码登录）----
+        if (Repository.hasCredentials()) {
+            Thread {
+                try {
+                    val result = HttpGrabber.grab(
+                        Repository.user, Repository.pass, Repository.loadSchedule().term,
+                        Repository.httpCookies
+                    ) { status -> Log.d(TAG, "HTTP抓取: $status") }
+                    // 课表入库
+                    val parsed = JwxtParser.parseHtml(result.tableHtml)
+                    if (parsed != null && parsed.courses.isNotEmpty()) {
+                        Repository.httpCookies = HttpGrabber.cookieSnapshot()
+                        Repository.replaceCourses(parsed.courses, parsed.term,
+                            keepEdited = Repository.editedCourses().isNotEmpty())
+                        // 学分
+                        result.creditHtml?.let { creditHtml ->
+                            try {
+                                val credits = JwxtParser.parseCredits(creditHtml)
+                                if (credits.isNotEmpty()) {
+                                    val merged = Repository.mergeCreditsRounds(listOf(credits))
+                                    Repository.applyCredits(merged)
+                                }
+                            } catch (_: Exception) {}
+                        }
+                        runOnUiThread { refreshSignal.value++ }
+                        Log.d(TAG, "HTTP抓取成功: ${parsed.courses.size} 门课")
+                        return@Thread
+                    }
+                    throw Exception("解析为空")
+                } catch (e: Exception) {
+                    Log.d(TAG, "HTTP抓取失败，回退 WebView: ${e.message}")
+                    runOnUiThread { runBackgroundUpdateWebView() }
+                }
+            }.start()
+            return
+        }
+        runBackgroundUpdateWebView()
+    }
+
+    /**
+     * 后台无界面 WebView 抓取更新（HTTP 失败时的兜底）：加载教务门户（含课表预览），
      * 若会话有效则直接抓；会话过期则尝试用保存的账号自动登录后再抓。
      * 成功才覆盖本地课表，失败保持原样。
      */
     @SuppressLint("SetJavaScriptEnabled")
-    private fun runBackgroundUpdate() {
+    private fun runBackgroundUpdateWebView() {
         try {
             val wv = WebView(this)
             wv.settings.javaScriptEnabled = true
@@ -154,8 +199,11 @@ class MainActivity : ComponentActivity() {
                     for (d in longArrayOf(300, 3000, 8000)) {
                         wv.postDelayed({ autoLoginOnce(wv) }, d)
                     }
-                    // 登录跳转+课表渲染耗时不确定，分批多试几次抓取（页面加载后 4s 首抓，10s 内抓完）
-                    for (d in longArrayOf(4000, 7000, 10000)) {
+                    // 登录跳转+课表渲染耗时不确定，分批多试几次抓取。
+                    // 会话有效时页面 1~2s 内就渲染完，首抓提前到 1.8s（原来白等 4s）；
+                    // 抓早了页面没就绪就抓不到，由后续轮次兜住；第 4 轮 12s 再兜一次，
+                    // 多一轮机会凑满三轮（RoundCollector 满了以后多余的会被自动忽略）。
+                    for (d in longArrayOf(1800, 3600, 6400, 12000)) {
                         wv.postDelayed({
                             try {
                                 wv.evaluateJavascript(GRAB_JS, null)
@@ -165,19 +213,20 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            // 会话过期时该页会跳统一认证（service 带完整回跳地址），登录后回到课表页。
-            // 注意：不能加载教务主页 xsMainV.jsp——主页没有课表网格，后台更新会永远抓空。
-            wv.loadUrl(Repository.jwUrl.ifEmpty { "https://jwxt.njfu.edu.cn/jsxsd/xskb/xskb_list.do" })
-            // 兜底释放
-            wv.postDelayed({ destroyBgWebView() }, 20000L)
+            // 会话过期时该页会跳统一认证（service 带完整回跳地址），登录后回到门户。
+            // 入口走门户（framework/xsMainV.jsp，内嵌课表预览 iframe）：2026-11 选课期起
+            // 直接访问 xskb_list.do 会被教务拦截，门户内的课表页/课表预览反而可达，
+            // GRAB_JS 会遍历 iframe 抓到课表。
+            wv.loadUrl(Repository.jwUrl.ifEmpty { "https://jwxt.njfu.edu.cn/jsxsd/framework/xsMainV.jsp" })
+            // 兜底释放（只在抓取/爬学分卡死时才会等到这一刻；成功路径完成后会主动释放）
+            wv.postDelayed({ destroyBgWebView() }, 25000L)
         } catch (e: Exception) {
             // 忽略：仍是上次保存的课表
         }
     }
 
     /** 在当前页面尝试一次自动登录：只在登录输入框为空时填写（见 autoLoginJs）。
-     *  提交成功后主动跳到课表页：CAS 登录后的默认落点可能是个人中心门户，
-     *  停在那里会被抓取脚本抓到门户预览表（结构不同，老师会抓丢）。 */
+     *  提交成功后回到门户入口（GRAB_JS 会遍历 iframe 抓到课表/课表预览）。 */
     private fun autoLoginOnce(wv: WebView) {
         val u = Repository.user
         val p = Repository.pass
@@ -186,7 +235,7 @@ class MainActivity : ComponentActivity() {
             if (r.contains("submitted")) {
                 wv.postDelayed({
                     try {
-                        wv.loadUrl(Repository.jwUrl.ifEmpty { "https://jwxt.njfu.edu.cn/jsxsd/xskb/xskb_list.do" })
+                        wv.loadUrl(Repository.jwUrl.ifEmpty { "https://jwxt.njfu.edu.cn/jsxsd/framework/xsMainV.jsp" })
                     } catch (_: Exception) {}
                 }, 1500)
             }
@@ -261,15 +310,11 @@ class MainActivity : ComponentActivity() {
         val wv = bgWebView ?: return
         val grab = bgGrab ?: return
         if (!grab.markRoundsStarted()) return
-        val js = loadKbJs(term)
-        for (d in longArrayOf(300, 900, 1500)) {
-            wv.postDelayed({
-                try { bgWebView?.evaluateJavascript(js, null) } catch (_: Exception) {}
-            }, d)
-        }
+        try { wv.evaluateJavascript(loadKbJs(term), null) } catch (_: Exception) {}
     }
 
     companion object {
+        private const val TAG = "HttpGrabber"
         /** GitHub 用户名（改名后统一在这里改） */
         const val GITHUB_USER = "QingH-Yi"
         /** 站点主页 */
@@ -329,11 +374,15 @@ class MainActivity : ComponentActivity() {
                 "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
         /** 抓取当前页面（含同源 iframe）里最像课表的表格 HTML。
-         *  find() 必须认准标准课表结构（.kbcontent/.kbcontent1 格子）：
-         *  自动登录后 WebView 可能停在个人中心门户页，那里的预览表也有"星期/周期"字样，
-         *  但没有 title 标注齐全的课程格——抓它会把老师全抓丢（2026-10-31 用户报的"没老师"根因）。 */
+         *  find() 认准两种课表结构：
+         *  ① 标准课表页（.kbcontent/.kbcontent1 格子，字段带 title 标注）；
+         *  ② 门户/个人中心课表（span.box 可见卡 + div.item-box 浮层）——解析器按
+         *     "box 里的 教师：X + item-box 全字段" 配对解析（2026-11-07 起 App 入口走
+         *     门户，选课期 xskb_list.do 被教务拦截时靠它抓数据）。 */
         const val GRAB_JS = """(function(){function find(doc){try{
-if(!doc.querySelector('.kbcontent,.kbcontent1'))return false;}catch(e){return false;}
+var kb=doc.querySelector('.kbcontent,.kbcontent1');
+var lb=doc.querySelectorAll('span.box').length>=3&&doc.querySelectorAll('div.item-box').length>=3;
+if(!kb&&!lb)return false;}catch(e){return false;}
 var ts=doc.querySelectorAll('table');
 for(var i=0;i<ts.length;i++){var tx=ts[i].textContent||'';
 if(/周\s*期|星期|Week/.test(tx)&&ts[i].querySelectorAll('td').length>15)return true;}return false;}
@@ -556,7 +605,7 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
     detail?.let { c0 ->
         // 保存后从存储里取最新（含 note/credit 字段）
         val c = schedule.courses.firstOrNull { it.id == c0.id } ?: c0
-        val color = th.cardColor(c.name)
+        val color = courseCardColor(c.name, th)
         var note by remember(c.id) { mutableStateOf(c.note ?: "") }
         // 学分只在"编辑"弹窗里改；详情页与其它行统一为只读展示（空值显——）
         val noteDirty = note.trim() != (c.note ?: "")
@@ -623,6 +672,42 @@ fun ScheduleApp(refreshState: MutableState<Int>) {
                         textStyle = LocalTextStyle.current.copy(fontSize = 13.sp, color = th.textPrimary),
                         modifier = Modifier.fillMaxWidth().heightIn(min = 74.dp).testTag("detailNoteField")
                     )
+                    Spacer(Modifier.height(8.dp))
+                    // 课程自定义颜色调色盘
+                    var colorHue by remember(c.id) { mutableStateOf(Repository.courseColorHue(c.name)) }
+                    Text("🎨 课程颜色", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = th.textSecondary)
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        COURSE_COLOR_HUES.forEach { hue ->
+                            val isSelected = colorHue == hue.toInt()
+                            Box(
+                                Modifier
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (hue < 0) Color.Transparent
+                                        else cardColorFromHue(hue, th.dark).first
+                                    )
+                                    .border(
+                                        width = if (isSelected) 2.5.dp else 1.5.dp,
+                                        color = if (isSelected) th.textPrimary
+                                                else cardColorFromHue(hue, th.dark).second.copy(alpha = 0.4f),
+                                        shape = CircleShape
+                                    )
+                                    .clickable {
+                                        Repository.setCourseColorHue(c.name, hue.toInt())
+                                        colorHue = hue.toInt()
+                                        schedule = Repository.loadSchedule()
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (hue < 0) Text("🔄", fontSize = 12.sp)
+                            }
+                        }
+                    }
                 }
                 Spacer(Modifier.height(10.dp))
                 Row(
@@ -1128,7 +1213,7 @@ fun TimetableView(
                                     }) {
                                         val c = seg.course
                                         if (c != null) {
-                                            val color = th.cardColor(c.name)
+                                            val color = courseCardColor(c.name, th)
                                             val dimmed = seg.dim
                                             val bodyAlpha = if (dimmed) 0.55f else 1f
                                             val cellSelected = !dimmed && selectedKey == "c:" + c.id
@@ -1243,7 +1328,7 @@ fun TimetableView(
                                             horizontalArrangement = Arrangement.spacedBy(3.dp)
                                         ) {
                                             for (b in rowCards) {
-                                                val color = th.cardColor(b.name)
+                                                val color = courseCardColor(b.name, th)
                                                 Column(
                                                     Modifier
                                                         .weight(1f)
@@ -1872,72 +1957,32 @@ fun SettingsDialog(
         }
     }
 
-    // 导出 WakeUp CSV：国内课表 App 生态标准交换格式，可导入 WakeUp 课表等 App
-    // 导出后直接拉起系统分享面板（QQ/微信/邮件/存到文件），不用再让用户选保存位置
-    val csvExportLauncher = textExportLauncher(exportScope, context, "text/csv") {
-        WakeCsv.buildCsv(Repository.loadSchedule())
-    }
     val icsExportLauncher = textExportLauncher(exportScope, context, "text/calendar") {
         val s = Repository.loadSchedule()
         IcsExport.buildIcs(s, s.campus)
     }
 
-    /** 导出 CSV 并直接分享：写 cache/exports/ 下的文件 → ACTION_SEND → 系统面板 */
-    fun shareCsvNow() {
+    /** 生成 Excel 并直接分享：写 cache/exports/ 下的 .xlsx → ACTION_SEND → 系统面板 */
+    fun shareExcelNow() {
         exportScope.launch {
             val res = withContext(Dispatchers.IO) {
                 runCatching {
                     val s = Repository.loadSchedule()
-                    val name = "南林课程表-${s.term.ifBlank { "未命名学期" }}.csv"
-                    ShareUtil.writeTextFile(context, name, WakeCsv.buildCsv(s)) to name
+                    val name = ExcelExport.suggestedFileName(s)
+                    ShareUtil.writeBinaryFile(context, name, ExcelExport.buildWorkbook(s, s.campus)) to name
                 }.getOrNull()
             }
             if (res == null) {
-                Toast.makeText(context, "生成 CSV 失败，请重试", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "生成 Excel 失败，请重试", Toast.LENGTH_LONG).show()
                 return@launch
             }
             ShareUtil.shareFile(
-                context, res.first, "text/csv",
+                context, res.first,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 subject = res.second,
-                text = "南林课程表（WakeUp CSV，可在 WakeUp 课表里「从 Excel 导入」）",
+                text = "南林课程表（Excel，含课程表 + 课程清单两张表）",
                 chooserTitle = "发送课程表到"
             )
-        }
-    }
-
-    // 导入 WakeUp CSV：从其它课表 App 迁移（同名同位置去重合并，手动加的课重抓时保留）
-    val csvImportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            exportScope.launch {
-                val text = withContext(Dispatchers.IO) {
-                    runCatching {
-                        context.contentResolver.openInputStream(uri)?.use {
-                            it.readBytes().toString(Charsets.UTF_8)
-                        }
-                    }.getOrNull()
-                }
-                if (text.isNullOrEmpty()) {
-                    Toast.makeText(context, "读取文件失败", Toast.LENGTH_LONG).show()
-                    return@launch
-                }
-                val (courses, skipped) = WakeCsv.parseCsv(text)
-                if (courses.isEmpty()) {
-                    Toast.makeText(
-                        context,
-                        "没解析到课程：请用 WakeUp 模板格式（课程名称,星期,开始节数,结束节数,老师,地点,周数）",
-                        Toast.LENGTH_LONG
-                    ).show()
-                    return@launch
-                }
-                val added = withContext(Dispatchers.IO) { Repository.addCourses(courses, "") }
-                Toast.makeText(
-                    context,
-                    "导入 $added 门新课（重复位置跳过），无效行 $skipped",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
         }
     }
 
@@ -2161,9 +2206,9 @@ fun SettingsDialog(
                     ) { SettingsChevron(th) }
                     SettingsDivider(th)
                     SettingsRow(
-                        th, "📤", SETTING_TINTS[3], "分享 WakeUp CSV 给好友",
-                        subtitle = "生成 .csv 文件后立刻弹出分享面板，直接选 QQ / 微信 / 邮件发给同学（对方在 WakeUp 里「从 Excel 导入」即可）",
-                        onClick = { shareCsvNow() }
+                        th, "📤", SETTING_TINTS[3], "分享课表 Excel 给好友",
+                        subtitle = "生成 .xlsx 后立刻弹出分享面板，直接选 QQ / 微信 / 邮件发给同学，不用自己挑保存位置",
+                        onClick = { shareExcelNow() }
                     ) { SettingsChevron(th) }
                     SettingsDivider(th)
                     SettingsRow(
@@ -2171,25 +2216,6 @@ fun SettingsDialog(
                         subtitle = "按周次和三校区作息展开成日历事件，导入系统日历后自动按周显示上课时间（整周实习无具体时刻，不含）",
                         onClick = {
                             icsExportLauncher.launch(IcsExport.suggestedFileName(Repository.loadSchedule()))
-                        }
-                    ) { SettingsChevron(th) }
-                    SettingsDivider(th)
-                    SettingsRow(
-                        th, "📋", SETTING_TINTS[1], "导出 WakeUp CSV（存到文件）",
-                        subtitle = "课表 App 通用交换格式，自己选保存位置（一门课一行；没有的老师/教室写「无」；整周实习不导出）",
-                        onClick = {
-                            val s = Repository.loadSchedule()
-                            csvExportLauncher.launch("南林课程表-${s.term.ifBlank { "未命名学期" }}.csv")
-                        }
-                    ) { SettingsChevron(th) }
-                    SettingsDivider(th)
-                    SettingsRow(
-                        th, "📥", SETTING_TINTS[0], "导入 WakeUp CSV",
-                        subtitle = "从其它课表 App 迁移：一门课一行的标准格式；与现有课表同位置去重合并，手动加的课重抓时保留",
-                        onClick = {
-                            csvImportLauncher.launch(
-                                arrayOf("text/csv", "text/comma-separated-values", "text/plain")
-                            )
                         }
                     ) { SettingsChevron(th) }
                 }
@@ -2268,7 +2294,7 @@ fun SettingsDialog(
 }
 
 /**
- * 文本类导出（WakeUp CSV / 日历 ICS）共用的 CreateDocument 启动器：
+ * 文本类导出（日历 ICS）用的 CreateDocument 启动器：
  * 用户选好保存位置后，在 IO 线程生成文本并写 UTF-8 字节，完成后 Toast。
  */@Composable
 private fun textExportLauncher(
@@ -2443,4 +2469,12 @@ fun resolveCurrentWeek(startMonday: String): Int {
     } catch (e: Exception) {
         1
     }
+}
+
+
+/** 课程卡片颜色：有自定义色相优先，否则跟随色系（顶层函数，各 composable 共用） */
+fun courseCardColor(name: String, th: AppColors): Pair<Color, Color> {
+    val hue = Repository.courseColorHue(name)
+    if (hue >= 0) return cardColorFromHue(hue.toFloat(), th.dark)
+    return th.cardColor(name)
 }

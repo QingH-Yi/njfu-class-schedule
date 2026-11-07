@@ -611,6 +611,24 @@ object Repository {
 
     fun hasCredentials(): Boolean = user.isNotEmpty() && savedPass && pass.isNotEmpty()
 
+    /** HTTP 抓取器的会话 Cookie（跨启动持久化，命中时 0.2s 直接抓） */
+    var httpCookies: String
+        get() = sp.getString("http_cookies", "") ?: ""
+        set(value) = sp.edit().putString("http_cookies", value).apply()
+
+    // ---- 课程自定义颜色（按课程名存储色相，同名课共用）----
+    private const val K_COURSE_COLOR_PREFIX = "course_color_"
+
+    /** 取课程自定义色相（-1 = 跟随色系） */
+    fun courseColorHue(name: String): Int =
+        sp.getInt(K_COURSE_COLOR_PREFIX + name.hashCode(), -1)
+
+    /** 设置课程自定义色相（-1 = 重置为跟随色系） */
+    fun setCourseColorHue(name: String, hue: Int) {
+        if (hue < 0) sp.edit().remove(K_COURSE_COLOR_PREFIX + name.hashCode()).apply()
+        else sp.edit().putInt(K_COURSE_COLOR_PREFIX + name.hashCode(), hue).apply()
+    }
+
     // ---- 覆盖安装处理 ----
     /** 上次运行过的 versionCode（0=首次安装）。覆盖安装后据此清残留、并强制抓取一次 */
     var appVersion: Int

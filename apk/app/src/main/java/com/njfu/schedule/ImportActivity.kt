@@ -31,7 +31,9 @@ class ImportActivity : ComponentActivity() {
     private lateinit var status: TextView
     private lateinit var th: AppColors
 
-    private val DEFAULT_URL = "https://jwxt.njfu.edu.cn/jsxsd/xskb/xskb_list.do"
+    // 入口走教务门户（带课表预览 iframe）：2026-11 选课期起直接访问 xskb_list.do 会被
+    // 教务拦截（返回通知 JSON/错误码），必须经门户进入。GRAB_JS 会遍历 iframe 抓到课表。
+    private val DEFAULT_URL = "https://jwxt.njfu.edu.cn/jsxsd/framework/xsMainV.jsp"
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,6 +45,71 @@ class ImportActivity : ComponentActivity() {
         WindowCompat.getInsetsController(window, window.decorView)
             .isAppearanceLightStatusBars = !th.dark
 
+        val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
+
+        // ---- 快路径：有保存的账号密码、课表无手动修改/删除时，纯 HTTP 抓取（2~3 秒）----
+        // 有手动修改或删除过的课时走 WebView 路径（需要"保留修改/恢复删除"交互确认）
+        if (Repository.hasCredentials() && Repository.editedCourses().isEmpty() &&
+            Repository.deletedKeys().isEmpty()) {
+            status = TextView(this).apply {
+                setPadding(dp(16), dp(10), dp(16), dp(10))
+                background = GradientDrawable().apply {
+                    setColor(if (th.dark) 0xF038312B.toInt() else 0xF2FFFFFF.toInt())
+                    cornerRadius = dp(18).toFloat()
+                }
+                textSize = 12.5f
+                setTextColor(if (th.dark) 0xFFEFE6DB.toInt() else 0xFF6B584C.toInt())
+                text = "正在高速抓取课表…"
+            }
+            val root = FrameLayout(this).apply { setBackgroundColor(th.bg.toArgb()) }
+            root.addView(status, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT
+            ).apply { gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; setMargins(dp(14), 0, dp(14), dp(18)) })
+            setContentView(root)
+
+            Thread {
+                try {
+                    val t0 = System.currentTimeMillis()
+                    val result = HttpGrabber.grab(
+                        Repository.user, Repository.pass, Repository.loadSchedule().term,
+                        Repository.httpCookies
+                    ) { s -> runOnUiThread { status.text = s } }
+                    val parsed = JwxtParser.parseHtml(result.tableHtml)
+                    if (parsed == null || parsed.courses.isEmpty()) throw Exception("解析为空")
+                    Repository.httpCookies = HttpGrabber.cookieSnapshot()
+                    Repository.replaceCourses(parsed.courses, parsed.term, keepEdited = false)
+                    result.creditHtml?.let { creditHtml ->
+                        try {
+                            val credits = JwxtParser.parseCredits(creditHtml)
+                            if (credits.isNotEmpty()) {
+                                val merged = Repository.mergeCreditsRounds(listOf(credits))
+                                Repository.applyCredits(merged)
+                            }
+                        } catch (_: Exception) {}
+                    }
+                    val secs = String.format("%.1f", (System.currentTimeMillis() - t0) / 1000.0)
+                    runOnUiThread {
+                        status.text = "导入成功：${parsed.courses.size} 门课（${secs}s）"
+                        setResult(RESULT_OK)
+                        window.decorView.postDelayed({ finish() }, 1200)
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread { initBrowser() }   // HTTP 失败 → WebView 手动路径
+                }
+            }.start()
+            return
+        }
+
+        initBrowser()
+    }
+
+    /** WebView 手动路径（HTTP 不可用/需要交互确认时的兜底） */
+    @SuppressLint("SetJavaScriptEnabled")
+    private var browserInited = false
+
+    private fun initBrowser() {
+        if (browserInited) return   // 已初始化（避免重复调用）
+        browserInited = true
         val dp = { v: Int -> (v * resources.displayMetrics.density).toInt() }
 
         val root = FrameLayout(this)
@@ -62,18 +129,46 @@ class ImportActivity : ComponentActivity() {
             isScrollbarFadingEnabled = true
             // 桌面 UA：统一认证/教务给手机 UA 返回另一套模板，自动登录只适配桌面版
             settings.userAgentString = MainActivity.DESKTOP_UA
+            // 教务门户菜单（培养管理 → 学期理论课表等）用 window.open 新窗口打开，
+            // 不开多窗口支持时点击菜单毫无反应、到不了课表页。这里把新窗口的地址
+            // 原地加载进同一个 WebView，行为等同真浏览器。
+            settings.setSupportMultipleWindows(true)
             addJavascriptInterface(GrabInterface(), "AndroidGrab")
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
                     CookieManager.getInstance().flush() // 持久化登录会话，供下次自动更新
-                    status.text = if (url?.contains("xskb_list") == true)
-                        "已加载课表页，点右上角「抓取课表」即可导入。"
-                    else
-                        "若在登录页请完成登录，进入「学期理论课表」后点右上角抓取。"
+                    status.text = when {
+                        url?.contains("xskb_list") == true ->
+                            "已加载课表页，点右上角「抓取课表」即可导入。"
+                        url?.contains("xsMainV") == true ->
+                            "已进入教务门户，点右上角「抓取课表」即可导入。"
+                        else ->
+                            "若在登录页请完成登录，进入「学期理论课表」后点右上角抓取。"
+                    }
                     // 自动填账号登录：验证码检查是异步的，分批多试几次
                     for (d in longArrayOf(300, 3000, 8000)) {
                         webView.postDelayed({ tryAutoLogin() }, d)
                     }
+                }
+            }
+            webChromeClient = object : android.webkit.WebChromeClient() {
+                // window.open 的目标（门户菜单"学期理论课表"等）在同一个 WebView 里打开
+                override fun onCreateWindow(
+                    view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: android.os.Message
+                ): Boolean {
+                    val temp = WebView(view!!.context).apply {
+                        settings.javaScriptEnabled = true
+                        settings.userAgentString = MainActivity.DESKTOP_UA
+                        webViewClient = object : WebViewClient() {
+                            override fun shouldOverrideUrlLoading(v: WebView, url: String): Boolean {
+                                webView.loadUrl(url)
+                                return true
+                            }
+                        }
+                    }
+                    (resultMsg.obj as WebView.WebViewTransport).webView = temp
+                    resultMsg.sendToTarget()
+                    return true
                 }
             }
         }
@@ -158,11 +253,8 @@ class ImportActivity : ComponentActivity() {
         grabbingCredits = true
         status.text = "已导入 $lastAdded 门课，正在爬学分…"
         val js = loadKbJs(res.term.ifEmpty { Repository.loadSchedule().term })
-        for (d in longArrayOf(300, 900, 1500)) {
-            webView.postDelayed({
-                try { webView.evaluateJavascript(js, null) } catch (_: Exception) {}
-            }, d)
-        }
+        // 脚本内部会自己取 GUID 并连抓三轮（0/400/800ms），这里 evaluate 一次即可
+        try { webView.evaluateJavascript(js, null) } catch (_: Exception) {}
     }
 
     private fun tryAutoLogin() {
@@ -188,8 +280,8 @@ class ImportActivity : ComponentActivity() {
         importFinished = false
         lastAdded = 0
         // 抓 3 轮：每轮对同一页面重新爬取（查缺补漏，某轮漏的课由其它轮补上），最后合并去重入库。
-        // 页面此刻已加载完，三轮连续快抓即可（总耗时 1.2s，不再白等 3 秒）
-        for (d in longArrayOf(0, 600, 1200)) {
+        // 页面此刻已加载完，三轮紧挨着跑即可（JS 单线程天然串行，总耗时约 0.5s）
+        for (d in longArrayOf(0, 250, 500)) {
             webView.postDelayed({
                 try { webView.evaluateJavascript(MainActivity.GRAB_JS, null) } catch (_: Exception) {}
             }, d)
@@ -223,8 +315,6 @@ class ImportActivity : ComponentActivity() {
     inner class GrabInterface {
         @JavascriptInterface
         fun receive(html: String) {
-            // receive 跑在 WebView 的 JavaBridge 后台线程（串行），在这里解析避免主线程卡顿/ANR；
-            // 解析完再回主线程更新界面。教务整页 HTML 有几百 KB～MB，主线程解析会有明显卡顿。
             val result = try {
                 JwxtParser.parseHtml(html)
             } catch (e: Exception) {

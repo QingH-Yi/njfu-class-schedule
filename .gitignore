@@ -7,7 +7,7 @@ local.properties
 replay_pid*.log
 node_modules/
 
-# 签名密钥（绝不入库，丢了无法覆盖安装）
+# 签名密钥（绝不入库，丢了一律无法覆盖安装）
 *.jks
 *.keystore
 # 签名用的密码文件（含明文密码，绝不入库）
@@ -16,24 +16,17 @@ keystore.properties
 # 含真实学号/班级信息的测试快照，仅限本机回归测试
 apk/app/src/test/resources/kb_list.html
 apk/app/src/test/resources/kb_loadkb.html
-
-# 交接手册（已脱敏，可入库）
+apk/app/src/test/resources/kb_list_live.html
+apk/app/src/test/resources/kb_loadkb_live.html
+apk/app/src/test/resources/kb_portal_live.html
+apk/njfu_schedule.xml
+apk/prefs_schedule.json
+screenshots/
 
 # 成品 APK 通过 GitHub Releases 分发，不进仓库
 *.apk
 
-# 临时中转文件夹（上传用，不入库）
-待上传/
-
-# 本机测试中转产物（截图、抓包 XML、导出的 prefs），不入库
-screenshots/
-apk/njfu_schedule.xml
-apk/prefs_schedule.json
-apk/app/src/test/resources/kb_list_live.html
-apk/app/src/test/resources/kb_loadkb_live.html
-
-# 调研/构建临时目录（本机沙箱专用，不入库）
-_research/
+# 本机临时目录（Gradle 缓存、模拟器、截图、调研资料）
 _tmp_gh/
 _tmp_gradle/
 _tmp_img/
@@ -41,6 +34,10 @@ _tmp_ah/
 _tmp_avd/
 _tmp_wk/
 _shots/
+_research/
 
 # 早期从 GitHub 克隆的旧副本（与仓库本身重复）
 class schedule-github/
+
+# 待上传中转
+待上传/

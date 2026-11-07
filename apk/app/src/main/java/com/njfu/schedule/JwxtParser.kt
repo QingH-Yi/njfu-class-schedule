@@ -225,6 +225,45 @@ object JwxtParser {
             )
         }
 
+        // 门户/个人中心课表补全：
+        // ① 截断课名（"电气工程学..."）→ 用同页出现的完整名补全（同一门课在其他格有完整名）；
+        //    多个同前缀候选时按教师签名消歧（卡片上的教师属于哪门课一目了然）
+        // ② 缺教师的课 → 用同页同名课的教师补全（如补课格的浮层里没有教师，但正常格有）
+        if (courses.any { it.name.endsWith("...") || it.name.endsWith("…") || it.teacher.isEmpty() }) {
+            val fullNames = courses.map { it.name }
+                .filter { !it.endsWith("...") && !it.endsWith("…") }.distinct()
+            val teachersOf = fullNames.associateWith { name ->
+                courses.filter { it.name == name && it.teacher.isNotEmpty() }
+                    .map { it.teacher }.toSet()
+            }
+            val fixed = courses.map { c0 ->
+                var c = c0
+                if (c.name.endsWith("...") || c.name.endsWith("…")) {
+                    val stem = c.name.removeSuffix("...").removeSuffix("…")
+                    var candidates = fullNames.filter { it.startsWith(stem) }
+                    if (candidates.size > 1 && c.teacher.isNotEmpty()) {
+                        val mine = setOf(c.teacher)
+                        val byTeachers = candidates.filter { (teachersOf[it] ?: emptySet()).any { t ->
+                            t.split(",").toSet() == mine
+                        } }
+                        if (byTeachers.size == 1) candidates = byTeachers
+                    }
+                    if (candidates.size == 1) c = c.copy(name = candidates[0])
+                }
+                if (c.teacher.isEmpty()) {
+                    val t = courses.firstOrNull { it.name == c.name && it.teacher.isNotEmpty() }?.teacher
+                    if (t != null) c = c.copy(teacher = t)
+                }
+                if (c.location.isEmpty()) {
+                    val l = courses.firstOrNull { it.name == c.name && it.location.isNotEmpty() }?.location
+                    if (l != null) c = c.copy(location = l)
+                }
+                c
+            }
+            courses.clear()
+            courses.addAll(fixed)
+        }
+
         val term = extractTerm(doc)
         return ParseResult(term, courses)
     }
@@ -423,16 +462,76 @@ object JwxtParser {
 
     /**
      * 解析整个 td，可能含多门课（正方/强智会把单周课+双周课、分组课等塞进同一格）。
-     * 优先按 div.item-box（个人中心页，每门课一个）逐门解析，其次按 div.kbcontent1（标准课表页）逐门解析，
-     * 都取不到则退回整格单课解析。与 web/js/parser.js 的 parseCellMulti 保持同步。
+     * 优先按"span.box 卡片 + div.item-box 浮层条目"解析（个人中心/门户课表）：
+     * 浮层里每门课一段（完整课名/节次/教室/周次，可含多门），卡片里有"教师：X"，
+     * 按截断名前缀匹配给条目补教师；卡片对不上任何条目时（如被卡片占位的课）
+     * 直接由卡片建课（截断名，交给 parseHtml 的页面级补全）。其次 div.kbcontent1
+     * （标准课表页），都取不到则退回整格单课解析。与 web/js/parser.js 的 parseCellMulti 同步。
      */
     private fun parseCellMulti(el: Element): List<Pair<CellInfo, Pair<Int?, Int?>>> {
-        // 个人中心课表页（mainV_index_loadkb）：每门课一个 div.item-box（含完整文本字段），优先逐个解析。
-        // 标准课表页（xskb_list.do）的 div.item-box 只是每个字段前插的二维码空壳（仅 img，无字段），
-        // 在这里解析不出任何东西，自然落到下一层。
         val hasTitles = el.select("font[title]").isNotEmpty()
         val noGuess = !hasTitles   // 无 title 的页面才允许老回退
+        val boxes = el.select("span.box").filter { it.select("p").isNotEmpty() }
         val itemBoxes = el.select("div.item-box")
+        if (boxes.isNotEmpty() && itemBoxes.isNotEmpty()) {
+            // 1) 条目：item-box 可能有多个且内容互为重复（外层/内层各一份），
+            //    每个里面按 <p> 分段（一段=一门课），逐段行解析后按签名去重
+            val entries = LinkedHashMap<String, Pair<CellInfo, Pair<Int?, Int?>>>()
+            for (ib in itemBoxes) {
+                // 按 <p> 前瞻切分（每个条目以 <p>课名</p> 开头），保留 <p> 原样
+                val parts = ib.html().split(Regex("(?=<p[\\s>])"))
+                val chunks = parts.filter { it.contains("</p>") }
+                for (ch in chunks) {
+                    val parsed = parseCellBlocks(ch, noGuess).firstOrNull() ?: continue
+                    val (c, p) = parsed
+                    if (c.name.isEmpty()) continue
+                    val sig = "${c.name}|${p.first}|${p.second}|${c.location}|${c.weeks.joinToString(",")}"
+                    entries.putIfAbsent(sig, parsed)
+                }
+            }
+            if (entries.isEmpty()) return emptyList()
+            // 2) 卡片教师按"截断名前缀 + 周次一致"匹配给条目（前缀可能同头，如
+            //    "电气工程学..."同时是学科前沿和专业英语的头，靠卡片上的周次区分）
+            //    注意：卡片周次要剥掉"01~02~03小节"（否则 1,2,3 会混进周次），
+            //    教师带".."结尾是页面自身截断，不可信、当没有用。
+            val used = mutableSetOf<String>()
+            val tmRe = Regex("^(?:教师|老师|任课)\\s*[:：]\\s*(.+)$")
+            val xjRe = Regex("\\d{1,2}(?:[~～\\-—–]\\d{1,2})*\\s*小节")
+            for (b in boxes) {
+                val lines = boxLinesOf(b)
+                val name = lines.firstOrNull() ?: continue
+                val teachers = lines.mapNotNull { tmRe.find(it)?.groupValues?.get(1)?.trim() }
+                    .filter { it.isNotEmpty() && !it.endsWith("..") && !it.endsWith("…") }
+                val boxText = norm(b.select("span.text").text().ifEmpty { b.ownText() })
+                val boxWeeks = parseWeeks(xjRe.replace(boxText, " "))
+                val stem = name.removeSuffix("...").removeSuffix("…")
+                fun candidate(): MutableMap.MutableEntry<String, Pair<CellInfo, Pair<Int?, Int?>>>? {
+                    val pool = entries.entries.filter { (k, v) ->
+                        v.first.teacher.isEmpty() && v.first.name.startsWith(stem) && k !in used
+                    }
+                    // 优先周次与卡片一致的；否则（卡片周次解析失败时）取唯一前缀命中
+                    return pool.firstOrNull { it.value.first.weeks == boxWeeks && boxWeeks.isNotEmpty() }
+                        ?: if (pool.size == 1 && boxWeeks.isEmpty()) pool[0] else null
+                }
+                val hit = candidate()
+                if (hit != null && teachers.isNotEmpty()) {
+                    hit.value.first.teacher = teachers.joinToString(",")
+                    used.add(hit.key)
+                } else if (hit == null) {
+                    // 3) 卡片没有对应条目（浮层被另一门课占位）：由卡片直接建课
+                    //    （截断名，页面级补全会用同页完整名替换）
+                    val c = CellInfo()
+                    c.name = name
+                    c.teacher = teachers.joinToString(",")
+                    if (c.name.isNotEmpty() && (parsePeriodList(boxText.replace(Regex("第[^节]{1,20}周"), " ")) != null || boxWeeks.isNotEmpty())) {
+                        c.weeks = boxWeeks
+                        val pl = parsePeriodList(boxText.replace(Regex("第[^节]{1,20}周"), " "))
+                        entries["BOX|$name"] = c to (pl?.firstOrNull() to pl?.lastOrNull())
+                    }
+                }
+            }
+            return entries.values.toList()
+        }
         if (itemBoxes.size >= 1) {
             val out = ArrayList<Pair<CellInfo, Pair<Int?, Int?>>>()
             for (b in itemBoxes) out.addAll(parseCellBlocks(b.html(), noGuess))
@@ -442,7 +541,6 @@ object JwxtParser {
         // 和 div.kbcontent（悬停完整层：课名/教师/教学楼/教室/节次）。
         // 全部解析后按课名合并互补（教师/节次以悬停层为准），同格两门课（不同名/不同师）各自成组。
         val layers = el.select("div.kbcontent, div.kbcontent1")
-        if (true) println("DBG layers=" + layers.size + " titles=" + hasTitles)
         if (layers.size >= 1) {
             val out = ArrayList<Pair<CellInfo, Pair<Int?, Int?>>>()
             for (b in layers) {
@@ -513,6 +611,16 @@ object JwxtParser {
 
     // ---- 工具 ----
     private fun norm(s: String) = s.replace(Regex("[\\u00a0\\u3000\\s]+"), " ").trim()
+
+    /** 可见卡片 span.box 的文本行（<p>截断课名</p><p>教师：X</p>；小节周次在 span.text 里） */
+    private fun boxLinesOf(box: Element): List<String> {
+        val out = ArrayList<String>()
+        for (p in box.select("p")) {
+            norm(p.text()).takeIf { it.isNotEmpty() }?.let { out.add(it) }
+        }
+        if (out.isEmpty()) norm(box.text()).takeIf { it.isNotEmpty() }?.let { out.add(it) }
+        return out
+    }
 
     /**
      * 规范化教室显示：把"教学楼 + 教室"合成一个干净地点，去掉中间的破折号。

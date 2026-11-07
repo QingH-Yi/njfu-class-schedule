@@ -127,9 +127,11 @@
     var r = (room || '').trim();
     if (!r) return b;
     if (r.indexOf('在线') >= 0) return r;
-    if (!b || b === '其他') return r;
-    if (r.indexOf(b) >= 0 || r.charAt(0) === '教') return r.replace(/-/g, ' ').trim();
-    return b + ' ' + r;
+    // 教室文本统一去掉中间的破折号（"教五楼-50320" → "教五楼 50320"）；教学楼为空/是"其他"的分支也要走
+    var rClean = r.replace(/-/g, ' ').replace(/　/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!b || b === '其他') return rClean;
+    if (rClean.indexOf(b) >= 0 || rClean.charAt(0) === '教') return rClean;
+    return b + ' ' + rClean;
   }
 
   // 按 <font title='...'> 精确解析一个课程块（可产出多门课）。
@@ -138,7 +140,8 @@
   // 同名多组（同格的显示层+悬停浮层两套呈现）合并互补：教师/节次以浮层为准。
   // 与 JwxtParser.kt 的 parseCellByTitleMulti 保持同步（改一处必须同步另一处）。
   function parseCellByTitleMulti(html) {
-    var doc = new DOMParser().parseFromString('<div>' + html + '</div>', 'text/html');
+    // <br> 转空格：与 Kotlin Jsoup text() 行为一致——名字跨行时"体育(5)<br/>(舞龙)"要拼成"体育(5) (舞龙)"
+    var doc = new DOMParser().parseFromString('<div>' + html.replace(/<br\s*\/?>/gi, ' ') + '</div>', 'text/html');
     var fonts = doc.querySelectorAll('font');
     var hasTitle = false;
     for (var t0 = 0; t0 < fonts.length; t0++) if (fonts[t0].hasAttribute('title')) { hasTitle = true; break; }
@@ -315,7 +318,10 @@
       }
     }
     if (!course.name) return [];
-    return [course];
+    // 与 Kotlin parseCellByLines 返回形状统一：[[course, [起节, 止节]]]（行路径的
+    // periods 由网格行兜底时可能为 null）。此前返回 [course] 与 title 路径不一致，
+    // 导致门户/个人中心课表（loadkb）解析在配对层全军覆没。
+    return [[course, [course.startPeriod, course.endPeriod]]];
   }
 
   /* ---------- 星期表头识别 ---------- */
@@ -431,7 +437,7 @@
         var parsedList = parseCellMulti(td);
         for (var pi = 0; pi < parsedList.length; pi++) {
           var course = parsedList[pi];
-          if (!course) continue;
+          if (!course || !course.name) continue;
           course.day = day;
           // 节次：优先单元格自带，其次行首"第X节"，再次默认上延
           var rp = rowPeriod[dr2];
@@ -506,6 +512,64 @@
       }
     }
 
+    // 门户/个人中心课表补全（与 JwxtParser.kt 的补全保持同步）：
+    // ① 截断课名 → 用同页完整名补全；多候选时按教师签名消歧
+    // ② 缺教师的课 → 用同页同名课的教师补全；③ 缺教室同理
+    var needFix = false;
+    for (var fi = 0; fi < courses.length; fi++) {
+      var nm = courses[fi].name || '';
+      if (/\.\.$/.test(nm) || /…$/.test(nm) || !(courses[fi].teacher) || !(courses[fi].location)) { needFix = true; break; }
+    }
+    if (needFix) {
+      var fullNames = [];
+      for (var fi2 = 0; fi2 < courses.length; fi2++) {
+        var n2 = courses[fi2].name || '';
+        if (!/\.\.$/.test(n2) && !/…$/.test(n2) && fullNames.indexOf(n2) < 0) fullNames.push(n2);
+      }
+      var teachersOf = {};
+      for (var fi3 = 0; fi3 < fullNames.length; fi3++) {
+        var set = {};
+        for (var fi4 = 0; fi4 < courses.length; fi4++) {
+          var cc4 = courses[fi4];
+          if (cc4.name === fullNames[fi3] && cc4.teacher) set[cc4.teacher] = 1;
+        }
+        teachersOf[fullNames[fi3]] = Object.keys(set);
+      }
+      for (var fi5 = 0; fi5 < courses.length; fi5++) {
+        var c5 = courses[fi5];
+        var n5 = c5.name || '';
+        if (/\.\.$/.test(n5) || /…$/.test(n5)) {
+          var stem = n5.replace(/\.{2,}$/, '').replace(/…$/, '');
+          var cands = [];
+          for (var fi6 = 0; fi6 < fullNames.length; fi6++) {
+            if (fullNames[fi6].indexOf(stem) === 0) cands.push(fullNames[fi6]);
+          }
+          if (cands.length > 1 && c5.teacher) {
+            var mine = c5.teacher.split(',');
+            var byT = [];
+            for (var fi7 = 0; fi7 < cands.length; fi7++) {
+              var tset = teachersOf[cands[fi7]] || [];
+              for (var fi8 = 0; fi8 < tset.length; fi8++) {
+                if (tset[fi8].split(',') === mine || tset[fi8].split(',').join('|') === mine.join('|')) { byT.push(cands[fi7]); break; }
+              }
+            }
+            if (byT.length === 1) cands = byT;
+          }
+          if (cands.length === 1) c5.name = cands[0];
+        }
+        if (!(c5.teacher)) {
+          for (var fi9 = 0; fi9 < courses.length; fi9++) {
+            if (courses[fi9].name === c5.name && courses[fi9].teacher) { c5.teacher = courses[fi9].teacher; break; }
+          }
+        }
+        if (!(c5.location)) {
+          for (var fi10 = 0; fi10 < courses.length; fi10++) {
+            if (courses[fi10].name === c5.name && courses[fi10].location) { c5.location = courses[fi10].location; break; }
+          }
+        }
+      }
+    }
+
     return { term: term, courses: courses };
   }
 
@@ -515,17 +579,111 @@
    * 都取不到则退回整格单课解析。与 JwxtParser.kt 的 parseCellMulti 保持同步（改一处必须同步另一处）。
    */
   function parseCellMulti(td) {
-    // 个人中心课表页：每门课一个 div.item-box（完整字段文本），优先逐个解析。
-    // 标准页的 div.item-box 只是字段前插的二维码空壳（仅 img），解析不出东西，自然落到下一层。
-    // 标准页 div.kbcontent1（显示层：课名/周次/教室，无教师）+ div.kbcontent（悬停完整层：
-    // 课名/教师/教学楼/教室/节次）。全部解析后按课名合并互补（与 JwxtParser.kt 的 parseCellMulti 同步）。
+    // 门户/个人中心课表：span.box（可见卡：截断名+教师：X+小节周次）+ div.item-box
+    //（浮层：完整课名/学分/节次/教室/周次，可含多门、内外层重复）。浮层按 <p> 分段逐门解析、
+    // 签名去重；卡片教师按"截断名前缀+周次一致"匹配给条目；对不上条目的卡片直接建课
+    //（截断名，页面级补全会用同页完整名替换）。卡片教师带".."是页面自身截断，不可信。
+    // 标准页 div.kbcontent1（显示层）+ div.kbcontent（悬停完整层）按课名合并互补。
+    // 与 JwxtParser.kt 的 parseCellMulti 保持同步（改一处必须同步另一处）。
     var hasTitles = td.querySelectorAll('font[title]').length > 0;
     var noGuess = !hasTitles;
+    var allBoxes = td.querySelectorAll('span.box');
+    var boxes = [];
+    for (var bi = 0; bi < allBoxes.length; bi++) {
+      if (allBoxes[bi].querySelectorAll('p').length > 0) boxes.push(allBoxes[bi]);
+    }
     var itemBoxes = td.querySelectorAll('div.item-box');
-    if (itemBoxes.length >= 1) {
-      var out = [];
+    if (boxes.length > 0 && itemBoxes.length > 0) {
+      var entries = {}, order = [];
       for (var a = 0; a < itemBoxes.length; a++) {
-        out = out.concat(parseCellBlocks(itemBoxes[a].innerHTML, noGuess));
+        var chunks = itemBoxes[a].innerHTML.split(/(?=<p[\s>])/);
+        for (var ci = 0; ci < chunks.length; ci++) {
+          if (chunks[ci].indexOf('</p>') < 0) continue;
+          // parseCellBlocks 两种返回形状：title 路径=[[course,periods],...]，
+          // 行路径=[course]（不带 periods，periods 由网格行补）——归一成 pair
+          var pr = parseCellBlocks(chunks[ci], noGuess);
+          if (!pr || !pr.length) continue;
+          var first = pr[0];
+          var course0 = (first && first.constructor === Array) ? first[0] : first;
+          var periods0 = (first && first.constructor === Array) ? first[1] : [null, null];
+          if (!course0 || !course0.name) continue;
+          var sig = course0.name + '|' + periods0[0] + '|' + periods0[1] + '|' +
+                    (course0.location || '') + '|' + (course0.weeks || []).join(',');
+          if (!(sig in entries)) {
+            // 注意：JS 侧 parseCellMulti 的契约是返回【课程对象数组】（节次缺省时
+            // 由网格行 rowPeriod 兜底），与 Kotlin 的 pair 形状不同，别照抄。
+            course0.startPeriod = periods0[0];
+            course0.endPeriod = periods0[1];
+            entries[sig] = course0;
+            order.push(sig);
+          }
+        }
+      }
+      if (order.length) {
+        var used = {};
+        var tmRe = /^(?:教师|老师|任课)\s*[:：]\s*(.+)$/;
+        var xjRe = /\d{1,2}(?:[~～\-—–]\d{1,2})*\s*小节/g;
+        for (var bk = 0; bk < boxes.length; bk++) {
+          var b = boxes[bk];
+          var lines = [];
+          var bps = b.querySelectorAll('p');
+          for (var bi2 = 0; bi2 < bps.length; bi2++) {
+            var ln = (bps[bi2].textContent || '').replace(/[　\s]+/g, ' ').trim();
+            if (ln) lines.push(ln);
+          }
+          if (!lines.length) continue;
+          var name = lines[0];
+          var teachers = [];
+          for (var li = 0; li < lines.length; li++) {
+            var tm = lines[li].match(tmRe);
+            if (tm) {
+              var t = tm[1].trim();
+              if (t && !/\.\.$/.test(t) && !/…$/.test(t)) teachers.push(t);
+            }
+          }
+          var boxText = (function () {
+            var st = b.querySelector('span.text');
+            return (st ? st.textContent : b.textContent || '').replace(/[　\s]+/g, ' ').trim();
+          })();
+          var boxWeeks = parseWeeks(boxText.replace(xjRe, ' '));
+          var stem = name.replace(/\.{2,}$/, '').replace(/…$/, '');
+          var pool = [];
+          for (var oi = 0; oi < order.length; oi++) {
+            var e = entries[order[oi]];
+            if (e.teacher || e.name.indexOf(stem) !== 0 || (used[order[oi]])) continue;
+            pool.push(order[oi]);
+          }
+          var hit = null;
+          for (var pi = 0; pi < pool.length; pi++) {
+            if (boxWeeks.length && (entries[pool[pi]].weeks || []).join(',') === boxWeeks.join(',')) { hit = pool[pi]; break; }
+          }
+          if (!hit && !boxWeeks.length && pool.length === 1) hit = pool[0];
+          if (hit && teachers.length) {
+            entries[hit].teacher = teachers.join(',');
+            used[hit] = 1;
+          } else if (!hit) {
+            var cc = newCourse();
+            cc.name = name;
+            if (teachers.length) cc.teacher = teachers.join(',');
+            var pl = parsePeriodList(boxText.replace(/第[^节]{1,20}周/g, ' '));
+            if (name && (pl || boxWeeks.length)) {
+              cc.weeks = boxWeeks;
+              if (pl) { cc.startPeriod = pl[0]; cc.endPeriod = pl[pl.length - 1]; }
+              order.push('BOX|' + name);
+              entries['BOX|' + name] = cc;
+            }
+          }
+        }
+        var result = [];
+        for (var ri = 0; ri < order.length; ri++) result.push(entries[order[ri]]);
+        return result;
+      }
+    }
+    var itemBoxes2 = td.querySelectorAll('div.item-box');
+    if (itemBoxes2.length >= 1) {
+      var out = [];
+      for (var a2 = 0; a2 < itemBoxes2.length; a2++) {
+        out = out.concat(parseCellBlocks(itemBoxes2[a2].innerHTML, noGuess));
       }
       if (out.length) return mergeLayerGroups(out);
     }
